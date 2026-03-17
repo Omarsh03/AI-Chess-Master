@@ -1,7 +1,5 @@
-# import the socket module
 import socket
 import pygame
-from board import ChessBoard
 from UserInterface import UserInterface
 import chess
 import time
@@ -13,11 +11,12 @@ class ChessClient:
         self.network = NetworkHandler()
         self.game = GameState()
         self.running = True
+        self.connected_mode = None
         
         # Initialize UI
         pygame.init()
         self.surface = pygame.display.set_mode([600, 600])
-        pygame.display.set_caption('Pawn Game')
+        pygame.display.set_caption('Full Chess')
         self.UI = UserInterface(self.surface, self.game.board)
         
         # Timer variables
@@ -72,6 +71,7 @@ class ChessClient:
         # Handle game mode
         data = self.network.receive_message()
         print(f"Server: {data}")
+        self.connected_mode = data
         if data == "HUMAN_HUMAN":
             self.game.game_mode = "HUMAN_HUMAN"
             self.UI.playerColor = chess.WHITE  # Always show White at bottom
@@ -93,46 +93,21 @@ class ChessClient:
         """Handle move execution and network communication."""
         if not move_str:
             return False
-            
-        if move_str == "Win":
-            self.network.send_message(move_str, blocking=True)
-            response = self.network.receive_message()
-            print(f"Server response to win: {response}")
-            if response == "exit":
-                return False
-        else:
-            # In Human vs Human mode, check if it's the correct player's turn
-            if self.game.game_mode == "HUMAN_HUMAN":
-                current_turn = self.game.board.board.turn
-                if ((current_turn == chess.WHITE and not self.UI.playerColor == chess.WHITE) or
-                    (current_turn == chess.BLACK and not self.UI.playerColor == chess.WHITE)):
-                    return True  # Ignore move if it's not the current player's turn
-            
-            self.network.send_message(move_str, blocking=True)
-            response = self.network.receive_message()
-            if response == "OK":
-                # Make the move
-                self.game.make_move(move_str)
-                self.UI.last_move = move_str
-                self.switch_timer()  # Switch timer after move
-                
-                # Check if this move results in a win (pawn reaching opposite end)
-                move = chess.Move.from_uci(move_str)
-                piece = self.game.board.board.piece_at(move.to_square)
-                if piece and piece.piece_type == chess.PAWN:
-                    target_rank = chess.square_rank(move.to_square)
-                    if ((piece.color == chess.WHITE and target_rank == 7) or
-                        (piece.color == chess.BLACK and target_rank == 0)):
-                        print("Win condition detected!")
-                        self.network.send_message("Win", blocking=True)
-                        response = self.network.receive_message()
-                        if response == "exit":
-                            return False
-                
-                self.UI.drawComponent()
-            elif response == "exit":
-                return False
-                
+
+        self.network.send_message(move_str, blocking=True)
+        response = self.network.receive_message()
+        if response == "OK":
+            self.game.make_move(move_str)
+            self.UI.last_move = move_str
+            self.switch_timer()
+            if self.game.board.is_game_over():
+                result = self.game.get_result()
+                self.UI.show_game_over_message(
+                    f"Result {result['result']} ({result.get('termination', 'UNKNOWN')})"
+                )
+            self.UI.drawComponent()
+        elif response == "exit":
+            return False
         return True
 
     def run(self):
@@ -152,18 +127,18 @@ class ChessClient:
             # Check for time loss
             if self.UI.white_time <= 0:
                 print("Black wins on time!")
-                self.network.send_message("Lost")
+                self.network.send_message("Lost", blocking=True)
                 break
             elif self.UI.black_time <= 0:
                 print("White wins on time!")
-                self.network.send_message("Lost")
+                self.network.send_message("Lost", blocking=True)
                 break
 
             # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
-                    self.network.send_message("exit")
+                    self.network.send_message("exit", blocking=True)
                     break
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if not self.game.board.is_game_over():
@@ -182,8 +157,12 @@ class ChessClient:
                     elif data == "exit":
                         self.running = False
                         break
+                    elif data.startswith("Result "):
+                        self.UI.show_game_over_message(data)
+                        self.running = False
+                        break
                     elif len(data) >= 4:  # Move format
-                        move_str = data[:4]
+                        move_str = data.strip()
                         self.game.make_move(move_str)
                         self.UI.last_move = move_str
                         self.switch_timer()  # Switch timer after opponent's move
@@ -192,14 +171,14 @@ class ChessClient:
                         
                         # Check if this move ended the game
                         if self.game.board.is_game_over():
-                            winner = self.game.board.get_winner()
-                            if winner == chess.WHITE:
-                                print("White wins!")
-                            else:
-                                print("Black wins!")
-                            self.UI.drawComponent()  # This will show the winner message
-                            pygame.time.wait(2000)  # Wait for 2 seconds to show the message
-                            self.network.send_message("exit")
+                            result = self.game.get_result()
+                            self.UI.show_game_over_message(
+                                f"Result {result['result']} ({result.get('termination', 'UNKNOWN')})"
+                            )
+                            self.network.send_message(
+                                f"Result {result['result']} {result.get('termination', 'UNKNOWN')}",
+                                blocking=True,
+                            )
                             break
             except Exception as e:
                 print(f"Error: {e}")

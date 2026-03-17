@@ -2,7 +2,6 @@ import socket
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
-from ai_agent import AIAgent
 import chess
 import time
 import random
@@ -11,177 +10,34 @@ import subprocess
 import sys
 import os
 from timer_manager import TimerManager
+from ai_agent import AIAgent
 
-class CustomBoardSetup:
+class SetupDialog:
+    """Simple setup dialog for standard position or custom FEN."""
+
     def __init__(self, parent, callback):
-        self.window = tk.Toplevel(parent)
-        self.window.title("Custom Board Setup")
         self.callback = callback
-        
-        # Initialize empty board
-        self.board = [[None for _ in range(8)] for _ in range(8)]
-        
-        # Current piece to place (White/Black/None)
-        self.current_piece = None
-        
-        self.setup_gui()
-        
-    def setup_gui(self):
-        """Setup the custom board GUI."""
-        # Control frame
-        control_frame = ttk.Frame(self.window, padding="5")
-        control_frame.grid(row=0, column=0, sticky="ew")
-        
-        # Radio buttons for piece selection
-        self.piece_var = tk.StringVar(value="none")
-        ttk.Radiobutton(control_frame, text="White Pawn", variable=self.piece_var, 
-                       value="white").grid(row=0, column=0, padx=5)
-        ttk.Radiobutton(control_frame, text="Black Pawn", variable=self.piece_var, 
-                       value="black").grid(row=0, column=1, padx=5)
-        ttk.Radiobutton(control_frame, text="Remove", variable=self.piece_var, 
-                       value="none").grid(row=0, column=2, padx=5)
-        
-        # Setup command text input
-        text_frame = ttk.Frame(self.window, padding="5")
-        text_frame.grid(row=1, column=0, sticky="ew")
-        ttk.Label(text_frame, text="Setup Command:").pack(side=tk.LEFT, padx=5)
-        self.setup_text = ttk.Entry(text_frame, width=50)
-        self.setup_text.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        ttk.Button(text_frame, text="Parse", command=self.parse_setup_text).pack(side=tk.LEFT, padx=5)
-        
-        # Board frame
-        board_frame = ttk.Frame(self.window, padding="10")
-        board_frame.grid(row=2, column=0)
-        
-        # Create 8x8 grid of buttons
-        self.squares = []
-        for row in range(8):
-            row_squares = []
-            for col in range(8):
-                btn = ttk.Button(board_frame, width=3, 
-                               command=lambda r=row, c=col: self.square_click(r, c))
-                btn.grid(row=row, column=col, padx=1, pady=1)
-                row_squares.append(btn)
-            self.squares.append(row_squares)
-        
-        # Control buttons
-        btn_frame = ttk.Frame(self.window, padding="5")
-        btn_frame.grid(row=3, column=0, sticky="ew")
-        
-        ttk.Button(btn_frame, text="Clear Board", 
-                  command=self.clear_board).grid(row=0, column=0, padx=5)
-        ttk.Button(btn_frame, text="Default Setup", 
-                  command=self.default_setup).grid(row=0, column=1, padx=5)
-        ttk.Button(btn_frame, text="Apply", 
-                  command=self.apply_setup).grid(row=0, column=2, padx=5)
-        
-        # Add labels for columns (a-h) and rows (1-8)
-        for col in range(8):
-            lbl = ttk.Label(board_frame, text=chr(97 + col))  # a-h
-            lbl.grid(row=8, column=col)
-        for row in range(8):
-            lbl = ttk.Label(board_frame, text=str(8 - row))  # 8-1
-            lbl.grid(row=row, column=8)
-            
-    def parse_setup_text(self):
-        """Parse setup command from text input and update board."""
-        setup_text = self.setup_text.get().strip()
-        if not setup_text.startswith("Setup"):
-            setup_text = "Setup " + setup_text
-            
-        # Clear current board
-        self.clear_board()
-        
-        # Parse pieces
-        pieces = setup_text.split()[1:]  # Skip "Setup"
-        for piece in pieces:
-            if len(piece) == 3 and piece[0] in ['W', 'B'] and piece[1] in 'abcdefgh' and piece[2] in '12345678':
-                color = piece[0]
-                col = ord(piece[1]) - ord('a')  # Convert file to column (0-7)
-                row = 8 - int(piece[2])  # Convert rank to row (0-7)
-                
-                if 0 <= row < 8 and 0 <= col < 8:
-                    self.board[row][col] = color
-                    self.squares[row][col].configure(text=color)
-            
-    def square_click(self, row, col):
-        """Handle clicking on a square."""
-        piece = self.piece_var.get()
-        if piece == "white":
-            self.board[row][col] = "W"
-            self.squares[row][col].configure(text="W")
-        elif piece == "black":
-            self.board[row][col] = "B"
-            self.squares[row][col].configure(text="B")
-        else:  # remove
-            self.board[row][col] = None
-            self.squares[row][col].configure(text="")
-        
-        # Update text input to match board state
-        self.update_setup_text()
-            
-    def clear_board(self):
-        """Clear all pieces from the board."""
-        for row in range(8):
-            for col in range(8):
-                self.board[row][col] = None
-                self.squares[row][col].configure(text="")
-        self.setup_text.delete(0, tk.END)
-        self.setup_text.insert(0, "Setup")
-                
-    def default_setup(self):
-        """Set up the default starting position."""
-        self.clear_board()
-        # Place white pawns on rank 2
-        for col in range(8):
-            self.board[6][col] = "W"
-            self.squares[6][col].configure(text="W")
-        # Place black pawns on rank 7
-        for col in range(8):
-            self.board[1][col] = "B"
-            self.squares[1][col].configure(text="B")
-        self.update_setup_text()
-            
-    def update_setup_text(self):
-        """Update the setup text input to match the current board state."""
-        setup_parts = ["Setup"]
-        for row in range(8):
-            for col in range(8):
-                if self.board[row][col]:
-                    # Convert to chess notation (e.g., "a2" for (6,0))
-                    square = chr(97 + col) + str(8 - row)
-                    setup_parts.append(self.board[row][col] + square)
-        
-        setup_cmd = " ".join(setup_parts)
-        self.setup_text.delete(0, tk.END)
-        self.setup_text.insert(0, setup_cmd)
-            
-    def apply_setup(self):
-        """Generate setup command and send it back."""
-        setup_cmd = self.setup_text.get().strip()
-        if not setup_cmd.startswith("Setup"):
-            setup_cmd = "Setup " + setup_cmd
-            
-        # Check if there are any pieces on the board
-        pieces = setup_cmd.split()[1:]  # Skip "Setup"
-        if not pieces:
-            # If no pieces in command, generate from board state
-            setup_parts = ["Setup"]
-            for row in range(8):
-                for col in range(8):
-                    if self.board[row][col]:
-                        # Convert to chess notation (e.g., "a2" for (6,0))
-                        square = chr(97 + col) + str(8 - row)
-                        setup_parts.append(self.board[row][col] + square)
-            setup_cmd = " ".join(setup_parts)
-            
-        # Only apply if there are pieces
-        if len(setup_cmd.split()) > 1:  # More than just "Setup"
-            self.callback(setup_cmd)
-            self.window.destroy()
-        else:
-            # Show error message if no pieces
-            messagebox.showerror("Error", "Cannot apply empty board setup. Please place some pieces first.")
+        self.window = tk.Toplevel(parent)
+        self.window.title("Board Setup")
+
+        frame = ttk.Frame(self.window, padding="10")
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text="Setup command:").grid(row=0, column=0, sticky="w")
+        self.entry = ttk.Entry(frame, width=80)
+        self.entry.grid(row=1, column=0, pady=6)
+        self.entry.insert(0, "Setup STANDARD")
+
+        hint = "Use: Setup STANDARD or Setup FEN <fen>"
+        ttk.Label(frame, text=hint).grid(row=2, column=0, sticky="w")
+        ttk.Button(frame, text="Apply", command=self.apply).grid(row=3, column=0, pady=8)
+
+    def apply(self):
+        text = self.entry.get().strip()
+        if not text.startswith("Setup"):
+            messagebox.showerror("Invalid", "Setup command must start with 'Setup'")
+            return
+        self.callback(text)
+        self.window.destroy()
 
 def get_resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -213,7 +69,7 @@ class ChessServer:
         self.ai_black = None
         self.server_running = False
         self.current_game_state = []  # Store moves for reconnection
-        self.custom_board_setup = "Setup Wa2 Wb2 Wc2 Wd2 We2 Wf2 Wg2 Wh2 Ba7 Bb7 Bc7 Bd7 Be7 Bf7 Bg7 Bh7"
+        self.custom_board_setup = "Setup STANDARD"
         
         # Initialize GUI
         self.root = tk.Tk()
@@ -263,7 +119,7 @@ class ChessServer:
 
     def open_board_setup(self):
         """Open the custom board setup window."""
-        CustomBoardSetup(self.root, self.update_board_setup)
+        SetupDialog(self.root, self.update_board_setup)
         
     def update_board_setup(self, setup_cmd):
         """Update the board setup command."""
@@ -302,8 +158,7 @@ class ChessServer:
             print(f"Initializing board with custom setup: {self.custom_board_setup}")
             self.board.setup_board(self.custom_board_setup)
         else:
-            # Use default setup if no custom setup is provided
-            default_setup = "Setup Wa2 Wb2 Wc2 Wd2 We2 Wf2 Wg2 Wh2 Ba7 Bb7 Bc7 Bd7 Be7 Bf7 Bg7 Bh7"
+            default_setup = "Setup STANDARD"
             print(f"Using default setup: {default_setup}")
             self.board.setup_board(default_setup)
         
@@ -527,11 +382,6 @@ class ChessServer:
             # Start timer
             self.timer.start()
             
-            # Replay moves if reconnecting
-            if self.current_game_state:
-                for move in self.current_game_state:
-                    self.board.move_piece(move)
-            
             # Send Begin signal before making AI move
             time.sleep(0.1)  # Small delay to ensure proper message separation
             client_socket.send("Begin".encode())
@@ -549,7 +399,7 @@ class ChessServer:
                     ai_move = ai.get_best_move()
                     if ai_move:
                         move_uci = ai_move.uci()
-                        if self.board.move_piece(move_uci):  # Verify move is valid
+                        if self.board.make_move(move_uci):  # Verify move is valid
                             self.current_game_state.append(move_uci)
                             self.timer.log_move(move_uci, True)  # Log White's move
                             self.timer.switch_turn()  # Switch to Black's time
@@ -557,7 +407,13 @@ class ChessServer:
                             client_socket.send(move_uci.encode())
                             print("AI move sent to client")
                             
-                            # Check for time loss
+                            if self.board.is_game_over():
+                                result = self.board.get_game_result()
+                                client_socket.send(
+                                    f"Result {result['result']} {result.get('termination', 'UNKNOWN')}".encode()
+                                )
+                                return
+
                             if self.timer.check_time_loss():
                                 client_socket.send("exit".encode())
                                 return
@@ -591,18 +447,17 @@ class ChessServer:
                 move = client_socket.recv(1024).decode()
                 print(f"Received move from human: {move}")
                 
-                if move == "Win":
-                    print("Human has won!")
-                    client_socket.send("exit".encode())
-                    break
-                    
                 if move in ["Lost", "exit"]:
                     print(f"Game ended: {move}")
                     client_socket.send("exit".encode())
                     break
+                if move.startswith("Result "):
+                    print(f"Client reported: {move}")
+                    client_socket.send("exit".encode())
+                    break
 
                 # Make the move on the board
-                if not self.board.move_piece(move):
+                if not self.board.make_move(move):
                     print(f"Invalid move: {move}")
                     client_socket.send("exit".encode())
                     break
@@ -614,6 +469,13 @@ class ChessServer:
                 # Send acknowledgment of human move
                 client_socket.send("OK".encode())
                 print("Acknowledged human move")
+
+                if self.board.is_game_over():
+                    result = self.board.get_game_result()
+                    client_socket.send(
+                        f"Result {result['result']} {result.get('termination', 'UNKNOWN')}".encode()
+                    )
+                    break
 
                 # Update timers before AI move
                 self.timer.update(self.board.board.turn)
@@ -632,7 +494,7 @@ class ChessServer:
                     ai_move = ai.get_best_move()
                     if ai_move:
                         move_uci = ai_move.uci()
-                        if self.board.move_piece(move_uci):
+                        if self.board.make_move(move_uci):
                             self.current_game_state.append(move_uci)
                             self.timer.log_move(move_uci, not human_is_white)  # Log AI's move
                             self.timer.switch_turn()  # Switch back to human's time
@@ -643,6 +505,13 @@ class ChessServer:
                             # Check for time-based loss
                             if self.timer.check_time_loss():
                                 client_socket.send("exit".encode())
+                                break
+
+                            if self.board.is_game_over():
+                                result = self.board.get_game_result()
+                                client_socket.send(
+                                    f"Result {result['result']} {result.get('termination', 'UNKNOWN')}".encode()
+                                )
                                 break
                                 
                             # Wait for acknowledgment
@@ -698,7 +567,7 @@ class ChessServer:
                     client_socket.send("exit".encode())
                     break
                     
-                if self.board.move_piece(white_move.uci()):
+                if self.board.make_move(white_move.uci()):
                     self.timer.log_move(white_move.uci(), True)  # Log White's move
                     self.timer.switch_turn()  # Switch to Black's time
                     client_socket.send(white_move.uci().encode())
@@ -719,14 +588,17 @@ class ChessServer:
                     client_socket.send("exit".encode())
                     break
                     
-                if self.board.move_piece(black_move.uci()):
+                if self.board.make_move(black_move.uci()):
                     self.timer.log_move(black_move.uci(), False)  # Log Black's move
                     self.timer.switch_turn()  # Switch back to White's time
                     client_socket.send(black_move.uci().encode())
                     time.sleep(1)  # Add delay between moves
                 
                 if self.board.is_game_over():
-                    client_socket.send("exit".encode())
+                    result = self.board.get_game_result()
+                    client_socket.send(
+                        f"Result {result['result']} {result.get('termination', 'UNKNOWN')}".encode()
+                    )
                     break
 
         except Exception as e:
@@ -758,18 +630,17 @@ class ChessServer:
                 if not move:
                     break
                     
-                if move == "Win":
-                    print("Win condition detected!")
-                    client_socket.send("exit".encode())
-                    break
-                    
                 if move in ["Lost", "exit"]:
                     print(f"Game ended: {move}")
                     client_socket.send("exit".encode())
                     break
+                if move.startswith("Result "):
+                    print(f"Result message: {move}")
+                    client_socket.send("exit".encode())
+                    break
 
                 # Validate move
-                if not self.board.move_piece(move):
+                if not self.board.make_move(move):
                     print(f"Invalid move: {move}")
                     client_socket.send("exit".encode())
                     break
@@ -784,7 +655,10 @@ class ChessServer:
                 # Check for game over
                 if self.board.is_game_over():
                     print("Game is over!")
-                    client_socket.send("exit".encode())
+                    result = self.board.get_game_result()
+                    client_socket.send(
+                        f"Result {result['result']} {result.get('termination', 'UNKNOWN')}".encode()
+                    )
                     break
 
         except ConnectionError:

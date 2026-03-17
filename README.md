@@ -1,6 +1,6 @@
-# Pawn Chess Game
+# Full Chess Game
 
-A chess variant where only pawns are used, implemented with Python and featuring AI gameplay.
+A full chess game implementation in Python with local/network modes and AI gameplay.
 
 ## Prerequisites
 
@@ -49,7 +49,7 @@ python server.py
 - You will be randomly assigned White or Black
 - If you're White, you move first
 - If you're Black, the AI will make the first move
-- Make moves by clicking on a pawn and then clicking its destination
+- Make moves by clicking a piece and then clicking its destination
 
 ### AI vs AI
 - Watch two AI players compete against each other
@@ -64,20 +64,16 @@ python server.py
 ## Custom Board Setup
 
 1. Click "Custom Board Setup" in the server window
-2. Use the radio buttons to select piece type (White Pawn/Black Pawn)
-3. Click on the board squares to place pieces
+2. Use `Setup STANDARD` for standard starting position
+3. Or use `Setup FEN <fen>` for a custom full-chess position
 4. Click "Apply" to save the setup
-5. Start the game with your custom position
+5. Start the game with your selected position
 
 ## Game Rules
 
-- Only pawns are used
-- Pawns move and capture according to standard chess rules
-- Win by:
-  - Getting a pawn to the opposite end of the board
-  - Capturing all opponent's pawns
-  - Making your opponent run out of legal moves
-  - Making your opponent run out of time
+- Standard full chess rules are used
+- Move legality, check/checkmate/stalemate, castling, en passant, promotion and draw rules are handled by `python-chess`
+- You can also win on time if your opponent's clock expires
 
 ## Time Control
 
