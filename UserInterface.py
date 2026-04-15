@@ -1,27 +1,56 @@
+import os
+import sys
 import pygame
 import chess
 
-UNICODE_PIECES = {
-    "P": "\u2659",
-    "N": "\u2658",
-    "B": "\u2657",
-    "R": "\u2656",
-    "Q": "\u2655",
-    "K": "\u2654",
-    "p": "\u265f",
-    "n": "\u265e",
-    "b": "\u265d",
-    "r": "\u265c",
-    "q": "\u265b",
-    "k": "\u265a",
+PIECE_IMAGE_FILES = {
+    "P": "white_pawn.png",
+    "N": "white_knight.png",
+    "B": "white_bishop.png",
+    "R": "white_rook.png",
+    "Q": "white_queen.png",
+    "K": "white_king.png",
+    "p": "black_pawn.png",
+    "n": "black_knight.png",
+    "b": "black_bishop.png",
+    "r": "black_rook.png",
+    "q": "black_queen.png",
+    "k": "black_king.png",
 }
+
+PIECE_POINTS = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+    chess.KING: 0,
+}
+
+
+def get_resource_path(relative_path):
+    """Resolve resource path for both dev and PyInstaller builds."""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 
 class UserInterface:
     def __init__(self, surface, board):
         self.surface = surface
         self.board = board
-        self.square_size = surface.get_width() // 8
+        self.margin = 20
+        self.sidebar_width = 240
+        available_w = max(320, surface.get_width() - self.sidebar_width - (self.margin * 2))
+        available_h = max(320, surface.get_height() - (self.margin * 2))
+        board_pixels = min(available_w, available_h)
+        self.square_size = max(32, board_pixels // 8)
+        self.board_size = self.square_size * 8
+        self.board_origin_x = self.margin
+        self.board_origin_y = max(self.margin, (surface.get_height() - self.board_size) // 2)
+        self.sidebar_x = self.board_origin_x + self.board_size + 20
         self.selected_square = None
         self.last_move = None
         self.valid_moves = []
@@ -30,6 +59,11 @@ class UserInterface:
         self.white_time = 300
         self.black_time = 300
         self.game_result_text = ""
+        self.game_winner_color = None
+        self.game_termination = ""
+        self.fallen_loser_color = None
+        self.fall_anim_start_ms = None
+        self.fall_anim_duration_ms = 700
 
         self.LIGHT_SQUARE = (240, 217, 181)
         self.DARK_SQUARE = (181, 136, 99)
@@ -37,34 +71,242 @@ class UserInterface:
         self.VALID_MOVE_COLOR = (186, 202, 43)
         self.LAST_MOVE_COLOR = (205, 210, 106)
         self.TEXT_COLOR = (0, 0, 0)
+        self.PANEL_BG = (245, 245, 245)
+        self.PANEL_BORDER = (190, 190, 190)
+        self.ARROW_COLOR = (30, 144, 255)
+        self.MARKER_COLOR = (40, 90, 210)
 
         pygame.font.init()
         self.info_font = pygame.font.Font(None, 30)
-        self.piece_font = pygame.font.Font(None, int(self.square_size * 0.8))
+        self.small_font = pygame.font.Font(None, 24)
+        self.title_font = pygame.font.Font(None, 36)
+        self.piece_images = self._load_piece_images()
+
+    def _load_piece_images(self):
+        """Load and scale all 12 piece images once at startup."""
+        piece_images = {}
+        missing_files = []
+        image_paths = {}
+        target_size = int(self.square_size * 0.86)
+
+        for symbol, filename in PIECE_IMAGE_FILES.items():
+            image_path = get_resource_path(os.path.join("assets", "pieces", filename))
+            image_paths[symbol] = image_path
+            if not os.path.isfile(image_path):
+                missing_files.append(image_path)
+
+        if missing_files:
+            missing_as_text = "\n".join(f"- {path}" for path in missing_files)
+            raise FileNotFoundError(
+                "Missing piece images. Add all 12 files under assets/pieces:\n"
+                f"{missing_as_text}"
+            )
+
+        for symbol, image_path in image_paths.items():
+            try:
+                image = pygame.image.load(image_path).convert_alpha()
+                piece_images[symbol] = pygame.transform.smoothscale(
+                    image, (target_size, target_size)
+                )
+            except pygame.error as exc:
+                raise RuntimeError(f"Failed to load piece image '{image_path}': {exc}") from exc
+
+        return piece_images
 
     def _screen_coords(self, file_idx, rank_idx):
-        x = file_idx * self.square_size
+        x = self.board_origin_x + (file_idx * self.square_size)
         if self.playerColor == chess.WHITE:
-            y = (7 - rank_idx) * self.square_size
+            y = self.board_origin_y + ((7 - rank_idx) * self.square_size)
         else:
-            y = rank_idx * self.square_size
+            y = self.board_origin_y + (rank_idx * self.square_size)
         return x, y
 
     def get_square_from_pos(self, pos):
         x, y = pos
-        if not (0 <= x < self.surface.get_width() and 0 <= y < self.surface.get_height()):
+        if not (
+            self.board_origin_x <= x < self.board_origin_x + self.board_size
+            and self.board_origin_y <= y < self.board_origin_y + self.board_size
+        ):
             return None
-        file_idx = x // self.square_size
+        file_idx = (x - self.board_origin_x) // self.square_size
         if self.playerColor == chess.WHITE:
-            rank_idx = 7 - (y // self.square_size)
+            rank_idx = 7 - ((y - self.board_origin_y) // self.square_size)
         else:
-            rank_idx = y // self.square_size
+            rank_idx = (y - self.board_origin_y) // self.square_size
         if 0 <= file_idx <= 7 and 0 <= rank_idx <= 7:
             return chess.square(file_idx, rank_idx)
         return None
 
-    def drawComponent(self):
-        self.surface.fill((255, 255, 255))
+    def square_center(self, square):
+        file_idx = chess.square_file(square)
+        rank_idx = chess.square_rank(square)
+        x, y = self._screen_coords(file_idx, rank_idx)
+        return (x + self.square_size // 2, y + self.square_size // 2)
+
+    def draw_arrow(self, from_square, to_square, color=None):
+        start = self.square_center(from_square)
+        end = self.square_center(to_square)
+        arrow_color = color if color is not None else self.ARROW_COLOR
+        pygame.draw.line(self.surface, arrow_color, start, end, 5)
+
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = max(1, (dx * dx + dy * dy) ** 0.5)
+        ux = dx / length
+        uy = dy / length
+        head_len = 16
+        head_w = 10
+        tip = (end[0], end[1])
+        left = (
+            end[0] - (ux * head_len) + (uy * head_w),
+            end[1] - (uy * head_len) - (ux * head_w),
+        )
+        right = (
+            end[0] - (ux * head_len) - (uy * head_w),
+            end[1] - (uy * head_len) + (ux * head_w),
+        )
+        pygame.draw.polygon(self.surface, arrow_color, [tip, left, right])
+
+    def draw_marker(self, square, color=None):
+        marker_color = color if color is not None else self.MARKER_COLOR
+        center = self.square_center(square)
+        radius = max(8, int(self.square_size * 0.22))
+        width = max(2, int(self.square_size * 0.08))
+        pygame.draw.circle(self.surface, marker_color, center, radius, width)
+
+    def clear_game_result(self):
+        self.game_result_text = ""
+        self.game_winner_color = None
+        self.game_termination = ""
+        self.fallen_loser_color = None
+        self.fall_anim_start_ms = None
+
+    def set_game_result(self, winner_color=None, termination="", message=None):
+        self.game_winner_color = winner_color
+        self.game_termination = termination or ""
+        self.fall_anim_start_ms = None
+        if winner_color in (chess.WHITE, chess.BLACK):
+            self.fallen_loser_color = not winner_color
+            self.fall_anim_start_ms = pygame.time.get_ticks()
+        else:
+            self.fallen_loser_color = None
+        if message is not None:
+            self.game_result_text = message
+            return
+        if winner_color == chess.WHITE:
+            self.game_result_text = f"White wins - Black loses ({self.game_termination})"
+        elif winner_color == chess.BLACK:
+            self.game_result_text = f"Black wins - White loses ({self.game_termination})"
+        else:
+            base = "Draw"
+            if self.game_termination:
+                base = f"{base} ({self.game_termination})"
+            self.game_result_text = base
+
+    def draw_fallen_king(self, loser_color, progress=1.0):
+        king_square = self.board.board.king(loser_color)
+        if king_square is None:
+            return
+        king_symbol = "K" if loser_color == chess.WHITE else "k"
+        sprite = self.piece_images.get(king_symbol)
+        if sprite is None:
+            return
+
+        # Ease-out makes the fall feel more natural.
+        p = max(0.0, min(1.0, float(progress)))
+        eased = 1.0 - ((1.0 - p) ** 3)
+        center_x, center_y = self.square_center(king_square)
+        shadow_w = int(self.square_size * (0.3 + 0.32 * eased))
+        shadow_h = int(self.square_size * (0.08 + 0.12 * eased))
+        shadow_rect = pygame.Rect(0, 0, shadow_w, shadow_h)
+        shadow_rect.center = (center_x, center_y + int(self.square_size * (0.05 + 0.25 * eased)))
+        pygame.draw.ellipse(self.surface, (40, 40, 40), shadow_rect)
+
+        target_angle = 105 if loser_color == chess.BLACK else -105
+        angle = target_angle * eased
+        scale = 1.0 + (0.03 * eased)
+        fallen = pygame.transform.rotozoom(sprite, angle, scale)
+        x_shift = int((self.square_size * 0.08) * eased * (1 if loser_color == chess.BLACK else -1))
+        y_shift = int((self.square_size * 0.24) * eased)
+        fallen_rect = fallen.get_rect(
+            center=(center_x + x_shift, center_y + y_shift)
+        )
+        self.surface.blit(fallen, fallen_rect)
+
+    def build_move_from_squares(self, from_square, to_square):
+        if from_square is None or to_square is None or from_square == to_square:
+            return None
+
+        move_prefix = chess.square_name(from_square) + chess.square_name(to_square)
+        legal_moves = self.board.get_legal_moves()
+        if move_prefix in legal_moves:
+            return move_prefix
+
+        promo = self._promotion_suffix(move_prefix)
+        if promo is None:
+            return None
+        return f"{move_prefix}{promo}" if promo else move_prefix
+
+    def get_capture_scores(self, starting_fen=None):
+        if starting_fen:
+            replay_board = chess.Board(starting_fen)
+        else:
+            replay_board = chess.Board()
+
+        white_score = 0
+        black_score = 0
+        for move in self.board.board.move_stack:
+            mover = replay_board.turn
+            if replay_board.is_capture(move):
+                if replay_board.is_en_passant(move):
+                    capture_square = move.to_square - 8 if mover == chess.WHITE else move.to_square + 8
+                else:
+                    capture_square = move.to_square
+                captured = replay_board.piece_at(capture_square)
+                if captured:
+                    value = PIECE_POINTS.get(captured.piece_type, 0)
+                    if mover == chess.WHITE:
+                        white_score += value
+                    else:
+                        black_score += value
+            replay_board.push(move)
+        return white_score, black_score
+
+    def drawComponent(
+        self,
+        dragging_piece_symbol=None,
+        drag_pos=None,
+        drag_from_square=None,
+        arrows=None,
+        marked_squares=None,
+        mode_label="",
+        starting_fen=None,
+        do_flip=True,
+    ):
+        self.surface.fill((232, 232, 232))
+        arrows = arrows or []
+        marked_squares = marked_squares or []
+        fallen_loser_color = None
+        fallen_king_square = None
+        fall_progress = 1.0
+        if self.fallen_loser_color in (chess.WHITE, chess.BLACK):
+            fallen_loser_color = self.fallen_loser_color
+            fallen_king_square = self.board.board.king(fallen_loser_color)
+            if self.fall_anim_start_ms is not None:
+                elapsed = pygame.time.get_ticks() - self.fall_anim_start_ms
+                fall_progress = max(0.0, min(1.0, elapsed / self.fall_anim_duration_ms))
+            else:
+                fall_progress = 1.0
+
+        panel_rect = pygame.Rect(
+            self.sidebar_x,
+            self.margin,
+            self.surface.get_width() - self.sidebar_x - self.margin,
+            self.surface.get_height() - (self.margin * 2),
+        )
+        pygame.draw.rect(self.surface, self.PANEL_BG, panel_rect, border_radius=8)
+        pygame.draw.rect(self.surface, self.PANEL_BORDER, panel_rect, 2, border_radius=8)
+
         for rank_idx in range(8):
             for file_idx in range(8):
                 square = chess.square(file_idx, rank_idx)
@@ -85,34 +327,108 @@ class UserInterface:
                     self.surface, color, (x, y, self.square_size, self.square_size)
                 )
 
+        for from_square, to_square in arrows:
+            self.draw_arrow(from_square, to_square)
+        for square in marked_squares:
+            self.draw_marker(square)
+
+        for rank_idx in range(8):
+            for file_idx in range(8):
+                square = chess.square(file_idx, rank_idx)
+                x, y = self._screen_coords(file_idx, rank_idx)
                 piece = self.board.board.piece_at(square)
-                if piece:
-                    text = UNICODE_PIECES[piece.symbol()]
-                    color_text = (20, 20, 20) if piece.color == chess.BLACK else (245, 245, 245)
-                    glyph = self.piece_font.render(text, True, color_text)
-                    rect = glyph.get_rect(
+                if piece and square != drag_from_square and square != fallen_king_square:
+                    sprite = self.piece_images[piece.symbol()]
+                    rect = sprite.get_rect(
                         center=(x + self.square_size // 2, y + self.square_size // 2)
                     )
-                    self.surface.blit(glyph, rect)
+                    self.surface.blit(sprite, rect)
 
-        white_minutes = int(self.white_time // 60)
-        white_seconds = int(self.white_time % 60)
-        black_minutes = int(self.black_time // 60)
-        black_seconds = int(self.black_time % 60)
+        if dragging_piece_symbol and drag_pos:
+            sprite = self.piece_images[dragging_piece_symbol]
+            rect = sprite.get_rect(center=drag_pos)
+            self.surface.blit(sprite, rect)
+        elif fallen_loser_color is not None:
+            self.draw_fallen_king(fallen_loser_color, progress=fall_progress)
+
+        white_score, black_score = self.get_capture_scores(starting_fen=starting_fen)
+        white_minutes = int(max(0, self.white_time) // 60)
+        white_seconds = int(max(0, self.white_time) % 60)
+        black_minutes = int(max(0, self.black_time) // 60)
+        black_seconds = int(max(0, self.black_time) % 60)
         turn = "White" if self.board.board.turn == chess.WHITE else "Black"
+        turn_color = (40, 120, 40) if self.board.board.turn == chess.WHITE else (120, 40, 40)
 
-        info_top = f"Turn: {turn}   White: {white_minutes:02d}:{white_seconds:02d}   Black: {black_minutes:02d}:{black_seconds:02d}"
-        top_text = self.info_font.render(info_top, True, self.TEXT_COLOR)
-        self.surface.blit(top_text, (8, 8))
+        y = self.margin + 12
+        title = self.title_font.render("Full Chess", True, self.TEXT_COLOR)
+        self.surface.blit(title, (self.sidebar_x + 16, y))
+        y += 42
+        if mode_label:
+            mode_text = self.small_font.render(f"Mode: {mode_label}", True, self.TEXT_COLOR)
+            self.surface.blit(mode_text, (self.sidebar_x + 16, y))
+            y += 30
+
+        turn_text = self.info_font.render(f"Turn: {turn}", True, turn_color)
+        self.surface.blit(turn_text, (self.sidebar_x + 16, y))
+        y += 38
+
+        white_text = self.small_font.render(
+            f"White  {white_minutes:02d}:{white_seconds:02d}   +{white_score}",
+            True,
+            self.TEXT_COLOR,
+        )
+        self.surface.blit(white_text, (self.sidebar_x + 16, y))
+        y += 28
+        black_text = self.small_font.render(
+            f"Black  {black_minutes:02d}:{black_seconds:02d}   +{black_score}",
+            True,
+            self.TEXT_COLOR,
+        )
+        self.surface.blit(black_text, (self.sidebar_x + 16, y))
+        y += 40
+
+        controls_header = self.small_font.render("Controls", True, self.TEXT_COLOR)
+        self.surface.blit(controls_header, (self.sidebar_x + 16, y))
+        y += 24
+        controls = [
+            "Left-click hold: drag piece",
+            "Left click piece -> target: move",
+            "Right drag: draw planning arrow",
+            "Right click same square: marker",
+            "U key: undo move",
+            "R key: redo move",
+            "M key: return to menu",
+        ]
+        for line in controls:
+            line_surface = self.small_font.render(line, True, (70, 70, 70))
+            self.surface.blit(line_surface, (self.sidebar_x + 16, y))
+            y += 20
+
+        if self.game_winner_color == chess.WHITE:
+            winner_surface = self.info_font.render("Winner: White", True, (28, 118, 43))
+            loser_surface = self.small_font.render("Loser: Black", True, (170, 35, 35))
+            self.surface.blit(winner_surface, (self.sidebar_x + 16, y + 6))
+            self.surface.blit(loser_surface, (self.sidebar_x + 16, y + 36))
+        elif self.game_winner_color == chess.BLACK:
+            winner_surface = self.info_font.render("Winner: Black", True, (28, 118, 43))
+            loser_surface = self.small_font.render("Loser: White", True, (170, 35, 35))
+            self.surface.blit(winner_surface, (self.sidebar_x + 16, y + 6))
+            self.surface.blit(loser_surface, (self.sidebar_x + 16, y + 36))
 
         if self.game_result_text:
-            result_surface = self.info_font.render(self.game_result_text, True, (190, 30, 30))
-            self.surface.blit(result_surface, (8, self.surface.get_height() - 30))
+            result_surface = self.small_font.render(
+                self.game_result_text, True, (190, 30, 30)
+            )
+            self.surface.blit(
+                result_surface,
+                (self.sidebar_x + 16, self.surface.get_height() - self.margin - 28),
+            )
 
-        pygame.display.flip()
+        if do_flip:
+            pygame.display.flip()
 
     def show_game_over_message(self, result_text):
-        self.game_result_text = result_text
+        self.set_game_result(winner_color=None, termination="", message=result_text)
         self.drawComponent()
 
     def _promotion_suffix(self, move_prefix):

@@ -20,10 +20,32 @@ required_files = [
     'game.py'
 ]
 
+required_piece_files = [
+    'assets/pieces/white_pawn.png',
+    'assets/pieces/white_knight.png',
+    'assets/pieces/white_bishop.png',
+    'assets/pieces/white_rook.png',
+    'assets/pieces/white_queen.png',
+    'assets/pieces/white_king.png',
+    'assets/pieces/black_pawn.png',
+    'assets/pieces/black_knight.png',
+    'assets/pieces/black_bishop.png',
+    'assets/pieces/black_rook.png',
+    'assets/pieces/black_queen.png',
+    'assets/pieces/black_king.png',
+]
+
 missing_files = [f for f in required_files if not os.path.exists(f)]
 if missing_files:
     print("Error: The following required files are missing:")
     for f in missing_files:
+        print(f"  - {f}")
+    sys.exit(1)
+
+missing_piece_files = [f for f in required_piece_files if not os.path.exists(f)]
+if missing_piece_files:
+    print("Error: Missing piece image files under assets/pieces:")
+    for f in missing_piece_files:
         print(f"  - {f}")
     sys.exit(1)
 
@@ -46,6 +68,7 @@ try:
         '--add-data=UserInterface.py;.',
         '--add-data=network.py;.',
         '--add-data=game.py;.',
+        '--add-data=assets/pieces;assets/pieces',
         '--hidden-import=pygame',
         '--hidden-import=chess',
         '--hidden-import=tkinter',

@@ -114,12 +114,13 @@ class ChessEngine:
         return False
 
     def is_game_over(self):
-        return self.board.is_game_over(claim_draw=True)
+        # Do not end the game on claimable draws (e.g. threefold repetition).
+        return self.board.is_game_over(claim_draw=False)
 
     def get_winner(self):
         if not self.is_game_over():
             return None
-        result = self.board.result(claim_draw=True)
+        result = self.board.result(claim_draw=False)
         if result == "1-0":
             return chess.WHITE
         if result == "0-1":
@@ -138,12 +139,12 @@ class ChessEngine:
         else:
             winner_name = None
 
-        outcome = self.board.outcome(claim_draw=True)
+        outcome = self.board.outcome(claim_draw=False)
         reason = outcome.termination.name if outcome else "UNKNOWN"
         return {
             "status": "finished",
             "winner": winner_name,
-            "result": self.board.result(claim_draw=True),
+            "result": self.board.result(claim_draw=False),
             "termination": reason,
         }
 

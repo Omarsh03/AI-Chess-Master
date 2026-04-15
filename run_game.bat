@@ -23,12 +23,10 @@ if %ERRORLEVEL% NEQ 0 (
     )
 )
 
-echo Starting server...
-start "Chess Server" cmd /k python server.py
-echo Waiting for server to initialize...
-timeout /t 3 /nobreak > nul
-echo Starting client...
-start "Chess Client" cmd /k python client.py
-echo Game started! Both windows will stay open to show any errors.
-echo Press any key to exit this window...
-pause
+echo Starting unified app...
+python unified_app.py
+if %ERRORLEVEL% NEQ 0 (
+    echo The app closed with an error.
+    pause
+    exit /b 1
+)
