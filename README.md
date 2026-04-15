@@ -1,12 +1,12 @@
 # Full Chess Game
 
-A full chess game implementation in Python with local/network modes and AI gameplay.
+A full chess app in Python (Pygame + python-chess) with a unified modern UI, AI modes, drag/click move input, planning annotations, clocks with increment, and enhanced game-over visuals.
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- pip (Python package installer)
-- Required Python packages (will be installed automatically):
+- Python 3.8+
+- pip
+- Required packages (installed by `run_game.bat` when needed):
   - chess==1.11.1
   - pygame==2.6.1
   - python-chess==1.999
@@ -14,87 +14,107 @@ A full chess game implementation in Python with local/network modes and AI gamep
 
 ## Quick Start
 
-1. Simply double-click `run_game.bat`
-2. The script will:
-   - Check for Python installation
-   - Install required packages if needed
-   - Start the server
-   - Start the client
+1. Double-click `run_game.bat`
+2. It will:
+   - verify Python
+   - install dependencies (if missing)
+   - run the unified app (`unified_app.py`)
 
-## Manual Setup (Alternative)
+You can also run directly:
 
-1. Create and activate a virtual environment:
+```bash
+python unified_app.py
+```
+
+## Manual Setup
 
 For Windows:
+
 ```bash
 python -m venv venv
 venv\Scripts\activate
-```
-
-2. Install required packages:
-```bash
 pip install -r requirements.txt
+python unified_app.py
 ```
 
-3. Start the server:
-```bash
-python server.py
-```
+## Unified App Flow
 
-4. The client will automatically start in a new window
+Everything runs in a single window:
+
+1. Choose game mode (`Human vs AI`, `AI vs AI`, `Human vs Human`)
+2. Choose time control (Bullet / Blitz / Rapid presets)
+3. If `Human vs AI`, choose color (`White`, `Black`, `Random`)
+4. Play in the same window (no separate server/client windows)
 
 ## Game Modes
 
 ### Human vs AI
-- You will be randomly assigned White or Black
-- If you're White, you move first
-- If you're Black, the AI will make the first move
-- Make moves by clicking a piece and then clicking its destination
+- Play against AI
+- Choose your color before game start
+- AI move calculation runs in a background thread for smoother UI
 
 ### AI vs AI
-- Watch two AI players compete against each other
-- The game will play automatically
-- You can observe the moves and strategy
+- Watch two AI players play automatically
 
-### Human vs Human (Local)
-- Play against another person on the same computer
-- White moves first
-- Players take turns making moves
+### Human vs Human
+- Local two-player game on one machine
 
-## Custom Board Setup
+## Time Controls
 
-1. Click "Custom Board Setup" in the server window
-2. Use `Setup STANDARD` for standard starting position
-3. Or use `Setup FEN <fen>` for a custom full-chess position
-4. Click "Apply" to save the setup
-5. Start the game with your selected position
+Chess.com-style presets are available:
 
-## Game Rules
+- **Bullet**: `1 min`, `1|1`, `2|1`
+- **Blitz**: `3 min`, `3|2`, `5 min`
+- **Rapid**: `10 min`, `15|10`, `30 min`
 
-- Standard full chess rules are used
-- Move legality, check/checkmate/stalemate, castling, en passant, promotion and draw rules are handled by `python-chess`
-- You can also win on time if your opponent's clock expires
+Format:
+- `X min` means no increment
+- `X|Y` means `Y` seconds increment added after each move
 
-## Time Control
+## Controls
 
-- Each player starts with the specified amount of time
-- Time decreases only during your turn
-- Running out of time results in losing the game
+### Piece Movement
+- Left-click hold and drag: move piece
+- Left-click piece, then left-click destination: move piece
 
-## Files Description
+### Planning Annotations
+- Right-drag from square to square: draw/remove arrow
+- Right-click same square: toggle circle marker
 
-- `server.py`: Main server implementation and game setup
-- `client.py`: Client implementation and game interface
-- `board.py`: Chess board representation and game logic
-- `ai_agent.py`: AI player implementation
-- `UserInterface.py`: Game UI implementation
-- `timer_manager.py`: Time control management
-- `local_game.py`: Local two-player game implementation
+### Keyboard
+- `U`: Undo
+- `R`: Redo
+- `M`: Return to menu
+
+## UI and Gameplay Enhancements
+
+- Piece sprites (image-based board rendering, not Unicode glyphs)
+- Captured-material score display for White/Black
+- Persistent game-over screen (window stays open)
+- Winner/loser display on game over
+- Fallen-king animation for the losing side
+- Undo/Redo still available after game over
+
+## Rules Notes
+
+- Standard full chess legality is enforced by `python-chess`
+- Win on time is supported
+- Claimable draw ending by **threefold repetition** is disabled in this app flow
+
+## Important Files
+
+- `unified_app.py`: Main single-window app flow and gameplay loop
+- `UserInterface.py`: Board/panel rendering, piece sprites, annotations, game-over visuals
+- `engine/chess_engine.py`: Core chess wrapper and endgame status policy
+- `ai_agent.py`: AI move search/evaluation
+- `run_game.bat`: Entry script for running the app
+- `assets/pieces/`: Piece images used by the board renderer
 
 ## Troubleshooting
 
-If you encounter any errors:
-1. Make sure Python is installed and added to PATH
-2. Try running `pip install -r requirements.txt` manually
-3. Check the error messages in the server and client windows
-4. Make sure no other instance of the game is running 
+If something fails:
+
+1. Ensure Python is installed and available in PATH
+2. Run `pip install -r requirements.txt`
+3. Run `python unified_app.py` from terminal to see errors
+4. Make sure another game instance is not already running
