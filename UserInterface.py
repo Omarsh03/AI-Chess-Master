@@ -81,6 +81,7 @@ class UserInterface:
         self.small_font = pygame.font.Font(None, 24)
         self.title_font = pygame.font.Font(None, 36)
         self.piece_images = self._load_piece_images()
+        self.captured_piece_images = self._build_captured_piece_images()
 
     def _load_piece_images(self):
         """Load and scale all 12 piece images once at startup."""
@@ -112,6 +113,16 @@ class UserInterface:
                 raise RuntimeError(f"Failed to load piece image '{image_path}': {exc}") from exc
 
         return piece_images
+
+    def _build_captured_piece_images(self):
+        """Build smaller sprites for captured-piece display in sidebar."""
+        mini_size = max(14, int(self.square_size * 0.36))
+        mini_images = {}
+        for symbol, sprite in self.piece_images.items():
+            mini_images[symbol] = pygame.transform.smoothscale(
+                sprite, (mini_size, mini_size)
+            )
+        return mini_images
 
     def _screen_coords(self, file_idx, rank_idx):
         x = self.board_origin_x + (file_idx * self.square_size)
@@ -272,6 +283,60 @@ class UserInterface:
             replay_board.push(move)
         return white_score, black_score
 
+    def get_captured_pieces(self, starting_fen=None):
+        if starting_fen:
+            replay_board = chess.Board(starting_fen)
+        else:
+            replay_board = chess.Board()
+
+        white_captured = []
+        black_captured = []
+
+        for move in self.board.board.move_stack:
+            mover = replay_board.turn
+            if replay_board.is_capture(move):
+                if replay_board.is_en_passant(move):
+                    capture_square = (
+                        move.to_square - 8 if mover == chess.WHITE else move.to_square + 8
+                    )
+                else:
+                    capture_square = move.to_square
+                captured = replay_board.piece_at(capture_square)
+                if captured:
+                    if mover == chess.WHITE:
+                        white_captured.append(captured.symbol())
+                    else:
+                        black_captured.append(captured.symbol())
+            replay_board.push(move)
+
+        return white_captured, black_captured
+
+    def draw_captured_strip(self, symbols, x, y, max_width):
+        if not symbols:
+            none_text = self.small_font.render("-", True, (90, 90, 90))
+            self.surface.blit(none_text, (x, y + 2))
+            return y + none_text.get_height() + 4
+
+        cursor_x = x
+        cursor_y = y
+        row_h = 0
+        spacing = 4
+        for symbol in symbols:
+            sprite = self.captured_piece_images.get(symbol)
+            if sprite is None:
+                continue
+            sprite_w = sprite.get_width()
+            sprite_h = sprite.get_height()
+            if cursor_x + sprite_w > x + max_width:
+                cursor_x = x
+                cursor_y += row_h + spacing
+                row_h = 0
+            self.surface.blit(sprite, (cursor_x, cursor_y))
+            cursor_x += sprite_w + spacing
+            row_h = max(row_h, sprite_h)
+
+        return cursor_y + row_h + 4
+
     def drawComponent(
         self,
         dragging_piece_symbol=None,
@@ -352,6 +417,10 @@ class UserInterface:
             self.draw_fallen_king(fallen_loser_color, progress=fall_progress)
 
         white_score, black_score = self.get_capture_scores(starting_fen=starting_fen)
+        white_captured, black_captured = self.get_captured_pieces(starting_fen=starting_fen)
+        score_diff = abs(white_score - black_score)
+        white_lead = white_score > black_score
+        black_lead = black_score > white_score
         white_minutes = int(max(0, self.white_time) // 60)
         white_seconds = int(max(0, self.white_time) % 60)
         black_minutes = int(max(0, self.black_time) // 60)
@@ -378,6 +447,11 @@ class UserInterface:
             self.TEXT_COLOR,
         )
         self.surface.blit(white_text, (self.sidebar_x + 16, y))
+        if white_lead and score_diff > 0:
+            white_lead_text = self.small_font.render(
+                f"Lead +{score_diff}", True, (28, 118, 43)
+            )
+            self.surface.blit(white_lead_text, (self.sidebar_x + 220, y))
         y += 28
         black_text = self.small_font.render(
             f"Black  {black_minutes:02d}:{black_seconds:02d}   +{black_score}",
@@ -385,7 +459,33 @@ class UserInterface:
             self.TEXT_COLOR,
         )
         self.surface.blit(black_text, (self.sidebar_x + 16, y))
+        if black_lead and score_diff > 0:
+            black_lead_text = self.small_font.render(
+                f"Lead +{score_diff}", True, (28, 118, 43)
+            )
+            self.surface.blit(black_lead_text, (self.sidebar_x + 220, y))
         y += 40
+
+        panel_content_width = self.surface.get_width() - self.sidebar_x - 32
+        white_captured_title = self.small_font.render(
+            "White captured:", True, self.TEXT_COLOR
+        )
+        self.surface.blit(white_captured_title, (self.sidebar_x + 16, y))
+        y += 22
+        y = self.draw_captured_strip(
+            white_captured, self.sidebar_x + 16, y, panel_content_width
+        )
+        y += 6
+
+        black_captured_title = self.small_font.render(
+            "Black captured:", True, self.TEXT_COLOR
+        )
+        self.surface.blit(black_captured_title, (self.sidebar_x + 16, y))
+        y += 22
+        y = self.draw_captured_strip(
+            black_captured, self.sidebar_x + 16, y, panel_content_width
+        )
+        y += 12
 
         controls_header = self.small_font.render("Controls", True, self.TEXT_COLOR)
         self.surface.blit(controls_header, (self.sidebar_x + 16, y))
