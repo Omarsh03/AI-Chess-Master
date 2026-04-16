@@ -1,8 +1,10 @@
 import random
 import time
 import threading
+import subprocess
 import pygame
 import chess
+import numpy as np
 
 from ai_agent import AIAgent
 from game import GameState
@@ -22,17 +24,30 @@ MODE_LABELS = {
 TIME_CONTROL_GROUPS = [
     ("Bullet", [("1 min", 60, 0), ("1|1", 60, 1), ("2|1", 120, 1)]),
     ("Blitz", [("3 min", 180, 0), ("3|2", 180, 2), ("5 min", 300, 0)]),
-    ("Rapid", [("10 min", 600, 0), ("15|10", 900, 10), ("30 min", 1800, 0)]),
+    ("Rapid", [("10 min", 600, 0), ("15|10", 900, 10), ("30 min", 1800, 0), ("No limit", -1, 0)]),
 ]
 
 
 class UnifiedChessApp:
     def __init__(self):
+        global WINDOW_WIDTH, WINDOW_HEIGHT
+        pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
         pygame.init()
+        self.windowed_size = (1040, 700)
+        display_info = pygame.display.Info()
+        WINDOW_WIDTH = max(self.windowed_size[0], display_info.current_w)
+        WINDOW_HEIGHT = max(self.windowed_size[1], display_info.current_h)
+        WINDOW_WIDTH, WINDOW_HEIGHT = self.windowed_size
         self.surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Full Chess")
         self.clock = pygame.time.Clock()
         self.running = True
+        self.is_fullscreen = False
+        self.sound_enabled = False
+        self.sounds = {}
+        self.sound_error = None
+        self.last_check_announce_ms = 0
+        self._init_audio()
 
         self.state = "MENU"
         self.game = None
@@ -52,7 +67,7 @@ class UnifiedChessApp:
 
         self.arrow_start_square = None
         self.arrows = []
-        self.marked_squares = set()
+        self.marked_squares = []
 
         self.white_time = 300
         self.black_time = 300
@@ -72,6 +87,12 @@ class UnifiedChessApp:
         self.ai_thinking_color = None
         self.ai_pending_move = None
         self.position_token = 0
+        self.turn_started_at = time.time()
+        self.move_log = []
+        self.white_label = "White"
+        self.black_label = "Black"
+        self.white_is_bot = False
+        self.black_is_bot = False
 
         self.menu_buttons = []
         self.color_buttons = []
@@ -81,6 +102,185 @@ class UnifiedChessApp:
         self._build_menu_buttons()
         self._build_color_buttons()
         self._build_time_buttons()
+
+    def _shape_audio_for_mixer(self, mono_pcm):
+        mixer_cfg = pygame.mixer.get_init()
+        if mixer_cfg is None:
+            return mono_pcm
+        channels = mixer_cfg[2]
+        if channels <= 1:
+            return mono_pcm
+        return np.repeat(mono_pcm[:, np.newaxis], channels, axis=1)
+
+    def _make_tone(self, frequency_hz, duration_seconds, volume=0.35):
+        sample_rate = 44100
+        samples = max(1, int(sample_rate * duration_seconds))
+        t = np.linspace(0, duration_seconds, samples, endpoint=False)
+        wave = np.sin(2 * np.pi * frequency_hz * t)
+        # Simple decay envelope to avoid click/pop at tone end.
+        envelope = np.linspace(1.0, 0.0, samples)
+        audio = wave * envelope * volume
+        pcm = np.int16(audio * 32767)
+        pcm = self._shape_audio_for_mixer(pcm)
+        return pygame.sndarray.make_sound(pcm)
+
+    def _make_tone_sequence(self, notes, volume=0.35):
+        sample_rate = 44100
+        chunks = []
+        for frequency_hz, duration_seconds in notes:
+            samples = max(1, int(sample_rate * duration_seconds))
+            t = np.linspace(0, duration_seconds, samples, endpoint=False)
+            wave = np.sin(2 * np.pi * frequency_hz * t)
+            envelope = np.linspace(1.0, 0.0, samples)
+            chunks.append(wave * envelope)
+        audio = np.concatenate(chunks) * volume
+        pcm = np.int16(audio * 32767)
+        pcm = self._shape_audio_for_mixer(pcm)
+        return pygame.sndarray.make_sound(pcm)
+
+    def _make_move_click_sound(self, volume=0.42):
+        """
+        Create a short "wooden piece move" click:
+        a soft transient + warm body tone + tiny high-frequency tick.
+        """
+        sample_rate = 44100
+        duration_seconds = 0.11
+        samples = max(1, int(sample_rate * duration_seconds))
+        t = np.linspace(0, duration_seconds, samples, endpoint=False)
+
+        # Warm body resonance.
+        body = (
+            0.68 * np.sin(2 * np.pi * 190 * t)
+            + 0.36 * np.sin(2 * np.pi * 320 * t)
+            + 0.18 * np.sin(2 * np.pi * 510 * t)
+        )
+        body_envelope = np.exp(-30.0 * t)
+
+        # Fast percussive attack.
+        rng = np.random.default_rng(7)
+        noise = rng.normal(0.0, 1.0, samples)
+        noise_envelope = np.exp(-180.0 * t)
+        attack = noise * noise_envelope * 0.20
+
+        # Small bright tick to improve clarity on laptop speakers.
+        tick = np.sin(2 * np.pi * 1500 * t) * np.exp(-85.0 * t) * 0.08
+
+        audio = (body * body_envelope) + attack + tick
+        peak = np.max(np.abs(audio))
+        if peak > 0:
+            audio = audio / peak
+        audio = audio * volume
+
+        pcm = np.int16(audio * 32767)
+        pcm = self._shape_audio_for_mixer(pcm)
+        return pygame.sndarray.make_sound(pcm)
+
+    def _init_audio(self):
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            self.sounds = {
+                "move": self._make_move_click_sound(volume=0.42),
+                "check": self._make_tone_sequence(
+                    [(740, 0.07), (988, 0.09)], volume=0.35
+                ),
+                "checkmate": self._make_tone_sequence(
+                    [(880, 0.08), (740, 0.08), (523, 0.16)], volume=0.4
+                ),
+            }
+            self.sound_enabled = True
+            self.sound_error = None
+        except Exception as exc:
+            self.sound_enabled = False
+            self.sounds = {}
+            self.sound_error = str(exc)
+
+    def _play_sound(self, sound_name):
+        if not self.sound_enabled:
+            return
+        sound = self.sounds.get(sound_name)
+        if sound is None:
+            return
+        try:
+            sound.play()
+        except Exception:
+            pass
+
+    def _speak_check_async(self):
+        now_ms = pygame.time.get_ticks()
+        # Avoid repeated voice spam on near-consecutive check positions.
+        if now_ms - self.last_check_announce_ms < 1200:
+            return
+        self.last_check_announce_ms = now_ms
+        threading.Thread(target=self._speak_check, daemon=True).start()
+
+    def _speak_check(self):
+        # Windows TTS via PowerShell / SAPI.
+        command = (
+            "Add-Type -AssemblyName System.Speech;"
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+            '$s.Rate = 0; $s.Volume = 100; $s.Speak("Check");'
+        )
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                check=False,
+                capture_output=True,
+            )
+        except Exception:
+            pass
+
+    def _rebuild_ui_for_current_surface(self):
+        if not self.ui or not self.game:
+            return
+        previous_ui = self.ui
+        rebuilt = UserInterface(self.surface, self.game.board)
+        rebuilt.selected_square = previous_ui.selected_square
+        rebuilt.last_move = previous_ui.last_move
+        rebuilt.valid_moves = list(previous_ui.valid_moves)
+        rebuilt.playerColor = previous_ui.playerColor
+        rebuilt.allow_both_colors = previous_ui.allow_both_colors
+        rebuilt.white_time = previous_ui.white_time
+        rebuilt.black_time = previous_ui.black_time
+        rebuilt.show_clock = previous_ui.show_clock
+        rebuilt.game_result_text = previous_ui.game_result_text
+        rebuilt.game_winner_color = previous_ui.game_winner_color
+        rebuilt.game_termination = previous_ui.game_termination
+        rebuilt.fallen_loser_color = previous_ui.fallen_loser_color
+        rebuilt.fall_anim_start_ms = previous_ui.fall_anim_start_ms
+        self.ui = rebuilt
+        self._build_game_buttons()
+
+    def _set_fullscreen(self, fullscreen):
+        global WINDOW_WIDTH, WINDOW_HEIGHT
+        if fullscreen:
+            display_info = pygame.display.Info()
+            WINDOW_WIDTH = max(self.windowed_size[0], display_info.current_w)
+            WINDOW_HEIGHT = max(self.windowed_size[1], display_info.current_h)
+            self.surface = pygame.display.set_mode(
+                (WINDOW_WIDTH, WINDOW_HEIGHT), pygame.FULLSCREEN
+            )
+            self.is_fullscreen = True
+        else:
+            WINDOW_WIDTH, WINDOW_HEIGHT = self.windowed_size
+            self.surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+            self.is_fullscreen = False
+
+        self._build_menu_buttons()
+        self._build_color_buttons()
+        self._build_time_buttons()
+        self._rebuild_ui_for_current_surface()
+
+    def _handle_display_shortcuts(self, event):
+        if event.type != pygame.KEYDOWN:
+            return False
+        if event.key == pygame.K_F11:
+            self._set_fullscreen(not self.is_fullscreen)
+            return True
+        if event.key == pygame.K_ESCAPE and self.is_fullscreen:
+            self._set_fullscreen(False)
+            return True
+        return False
 
     def _build_menu_buttons(self):
         center_x = WINDOW_WIDTH // 2
@@ -137,7 +337,8 @@ class UnifiedChessApp:
 
         y = top
         for category, options in TIME_CONTROL_GROUPS:
-            self.time_buttons.append(("HEADER", category, None))
+            header_y = y
+            self.time_buttons.append(("HEADER", category, header_y))
             y += 34
             for col, (label, base_seconds, increment_seconds) in enumerate(options):
                 x = left + col * (button_w + col_gap)
@@ -157,6 +358,8 @@ class UnifiedChessApp:
         )
 
     def _format_time_control(self, base_seconds, increment_seconds):
+        if base_seconds < 0:
+            return "No Limit"
         base_minutes = int(base_seconds // 60)
         if increment_seconds > 0:
             return f"{base_minutes}+{int(increment_seconds)}"
@@ -189,8 +392,9 @@ class UnifiedChessApp:
         self.left_drag_started = False
         self.arrow_start_square = None
         self.arrows = []
-        self.marked_squares = set()
+        self.marked_squares = []
         self.redo_stack = []
+        self.move_log = []
         self.ai_pending_move = None
         self.ai_thinking = False
         self.ai_thinking_color = None
@@ -204,14 +408,23 @@ class UnifiedChessApp:
         self.ui.playerColor = chess.WHITE
         self.ui.allow_both_colors = True
         self.ui.game_result_text = ""
+        self.ui.show_clock = self.base_time_seconds >= 0
 
-        self.white_time = float(self.base_time_seconds)
-        self.black_time = float(self.base_time_seconds)
+        if self.base_time_seconds >= 0:
+            self.white_time = float(self.base_time_seconds)
+            self.black_time = float(self.base_time_seconds)
+        else:
+            self.white_time = 0.0
+            self.black_time = 0.0
         self.last_timer_tick = time.time()
 
         self.human_color = None
         self.ai_white = None
         self.ai_black = None
+        self.white_label = "White Player"
+        self.black_label = "Black Player"
+        self.white_is_bot = False
+        self.black_is_bot = False
         if mode == "HUMAN_AI":
             if human_color is None:
                 self.human_color = random.choice([chess.WHITE, chess.BLACK])
@@ -224,12 +437,27 @@ class UnifiedChessApp:
             )
             self.ai_white = None if self.human_color == chess.WHITE else AIAgent(self.game.board, chess.WHITE, 5)
             self.ai_black = None if self.human_color == chess.BLACK else AIAgent(self.game.board, chess.BLACK, 5)
+            if self.human_color == chess.WHITE:
+                self.white_label = "You"
+                self.black_label = "AI Bot"
+                self.white_is_bot = False
+                self.black_is_bot = True
+            else:
+                self.white_label = "AI Bot"
+                self.black_label = "You"
+                self.white_is_bot = True
+                self.black_is_bot = False
         elif mode == "AI_AI":
             self.ai_white = AIAgent(self.game.board, chess.WHITE, 5)
             self.ai_black = AIAgent(self.game.board, chess.BLACK, 5)
+            self.white_label = "AI White"
+            self.black_label = "AI Black"
+            self.white_is_bot = True
+            self.black_is_bot = True
 
         self._build_game_buttons()
         self.last_ai_move_ms = pygame.time.get_ticks()
+        self.turn_started_at = time.time()
 
     def go_to_menu(self):
         self.state = "MENU"
@@ -238,6 +466,7 @@ class UnifiedChessApp:
         self.mode = None
         self.pending_mode = None
         self.mode_label = ""
+        self.move_log = []
         with self.ai_state_lock:
             self.ai_pending_move = None
             self.ai_thinking = False
@@ -256,6 +485,9 @@ class UnifiedChessApp:
 
     def _update_timers(self):
         if self.state != "GAME" or self.game_over:
+            return
+        if self.base_time_seconds < 0:
+            self.last_timer_tick = time.time()
             return
         now = time.time()
         elapsed = now - self.last_timer_tick
@@ -296,15 +528,42 @@ class UnifiedChessApp:
     def _apply_move(self, move_uci):
         if not move_uci:
             return False
+        think_seconds = max(0.0, time.time() - self.turn_started_at)
+        san = move_uci
+        try:
+            san = self.game.board.board.san(chess.Move.from_uci(move_uci))
+        except Exception:
+            san = move_uci
         mover = self.game.board.board.turn
         if self.game.make_move(move_uci):
+            board_state = self.game.board.board
+            if board_state.is_checkmate():
+                self._play_sound("checkmate")
+            elif board_state.is_check():
+                self._play_sound("check")
+                self._speak_check_async()
+            else:
+                self._play_sound("move")
+            self._clear_arrows_for_color(mover)
+            self._clear_markers_for_color(mover)
             if self.increment_seconds > 0:
                 if mover == chess.WHITE:
                     self.white_time += self.increment_seconds
                 else:
                     self.black_time += self.increment_seconds
             self.ui.last_move = move_uci
+            self.ui.selected_square = None
+            self.ui.valid_moves = []
+            self.move_log.append(
+                {
+                    "side": mover,
+                    "san": san,
+                    "uci": move_uci,
+                    "think_seconds": think_seconds,
+                }
+            )
             self.last_timer_tick = time.time()
+            self.turn_started_at = time.time()
             self.redo_stack.clear()
             self.position_token += 1
             with self.ai_state_lock:
@@ -339,6 +598,9 @@ class UnifiedChessApp:
         self.game_over = False
         self.time_loss_text = ""
         self.last_timer_tick = time.time()
+        if self.move_log:
+            self.move_log.pop()
+        self.turn_started_at = time.time()
         self.position_token += 1
         with self.ai_state_lock:
             self.ai_pending_move = None
@@ -354,6 +616,11 @@ class UnifiedChessApp:
             self.redo_stack.clear()
             return
         mover = board.turn
+        san = move.uci()
+        try:
+            san = board.san(move)
+        except Exception:
+            san = move.uci()
         board.push(move)
         if self.increment_seconds > 0:
             if mover == chess.WHITE:
@@ -370,20 +637,60 @@ class UnifiedChessApp:
         self.game_over = False
         self.time_loss_text = ""
         self.last_timer_tick = time.time()
+        self.move_log.append(
+            {
+                "side": mover,
+                "san": san,
+                "uci": move.uci(),
+                "think_seconds": 0.0,
+            }
+        )
+        self.turn_started_at = time.time()
         self.position_token += 1
         with self.ai_state_lock:
             self.ai_pending_move = None
         if self.game.is_game_over():
             self._update_game_result_text()
 
+    def _clear_arrows_for_color(self, color):
+        self.arrows = [
+            arrow
+            for arrow in self.arrows
+            if arrow["owner"] != color
+        ]
+
+    def _clear_markers_for_color(self, color):
+        self.marked_squares = [
+            marker
+            for marker in self.marked_squares
+            if marker["owner"] != color
+        ]
+
     def _toggle_arrow(self, from_square, to_square):
         if from_square is None or to_square is None or from_square == to_square:
             return
-        arrow = (from_square, to_square)
+        owner = self.game.board.board.turn if self.game else None
+        arrow = {"from": from_square, "to": to_square, "owner": owner}
         if arrow in self.arrows:
             self.arrows.remove(arrow)
         else:
             self.arrows.append(arrow)
+
+    def _get_visible_arrows(self):
+        return [(arrow["from"], arrow["to"]) for arrow in self.arrows]
+
+    def _toggle_marker(self, square):
+        if square is None:
+            return
+        owner = self.game.board.board.turn if self.game else None
+        marker = {"square": square, "owner": owner}
+        if marker in self.marked_squares:
+            self.marked_squares.remove(marker)
+        else:
+            self.marked_squares.append(marker)
+
+    def _get_visible_marked_squares(self):
+        return [marker["square"] for marker in self.marked_squares]
 
     def _maybe_make_ai_move(self):
         if self.state != "GAME" or self.game_over:
@@ -429,7 +736,10 @@ class UnifiedChessApp:
             token = self.position_token
 
         board_snapshot = self.game.board.copy()
-        think_seconds = max(1, int(self.base_time_seconds // 60))
+        if self.base_time_seconds < 0:
+            think_seconds = 6
+        else:
+            think_seconds = max(2, min(25, int(self.base_time_seconds // 30)))
 
         def worker(snapshot, color, pos_token, think_time):
             move_uci = None
@@ -489,14 +799,8 @@ class UnifiedChessApp:
 
             for item in self.time_buttons:
                 if item[0] == "HEADER":
-                    category = item[1]
+                    category, y = item[1], item[2]
                     header = section_font.render(category, True, (240, 240, 240))
-                    if category == "Bullet":
-                        y = 150
-                    elif category == "Blitz":
-                        y = 318
-                    else:
-                        y = 486
                     self.surface.blit(header, ((WINDOW_WIDTH // 2) - 255, y))
                     continue
 
@@ -529,16 +833,28 @@ class UnifiedChessApp:
             dragging_piece_symbol=self.dragging_piece_symbol,
             drag_pos=self.drag_pos,
             drag_from_square=self.drag_from_square,
-            arrows=self.arrows,
-            marked_squares=list(self.marked_squares),
+            arrows=self._get_visible_arrows(),
+            marked_squares=self._get_visible_marked_squares(),
             mode_label=self.mode_label,
             starting_fen=self.starting_fen,
+            white_label=self.white_label,
+            black_label=self.black_label,
+            white_is_bot=self.white_is_bot,
+            black_is_bot=self.black_is_bot,
+            move_log=self.move_log,
             do_flip=False,
         )
 
-        button_font = pygame.font.Font(None, 28)
+        button_font = pygame.font.Font(None, 29)
+        mouse_pos = pygame.mouse.get_pos()
         for key, rect in self.game_buttons.items():
-            pygame.draw.rect(self.surface, (68, 68, 68), rect, border_radius=6)
+            hovered = rect.collidepoint(mouse_pos)
+            shadow_rect = rect.move(0, 2)
+            pygame.draw.rect(self.surface, (23, 27, 34), shadow_rect, border_radius=8)
+            base_color = (58, 68, 88) if hovered else (50, 58, 74)
+            border_color = (120, 148, 196) if hovered else (92, 108, 136)
+            pygame.draw.rect(self.surface, base_color, rect, border_radius=8)
+            pygame.draw.rect(self.surface, border_color, rect, 1, border_radius=8)
             if key == "undo":
                 label = "Undo (U)"
             elif key == "redo":
@@ -676,10 +992,7 @@ class UnifiedChessApp:
             if self.arrow_start_square is not None:
                 end_square = self.ui.get_square_from_pos(event.pos)
                 if end_square == self.arrow_start_square:
-                    if end_square in self.marked_squares:
-                        self.marked_squares.remove(end_square)
-                    else:
-                        self.marked_squares.add(end_square)
+                    self._toggle_marker(end_square)
                 else:
                     self._toggle_arrow(self.arrow_start_square, end_square)
             self.arrow_start_square = None
@@ -690,6 +1003,8 @@ class UnifiedChessApp:
                 if event.type == pygame.QUIT:
                     self.running = False
                     break
+                if self._handle_display_shortcuts(event):
+                    continue
                 if self.state in ("MENU", "MENU_COLOR", "MENU_TIME"):
                     self._handle_menu_event(event)
                 elif self.state == "GAME":

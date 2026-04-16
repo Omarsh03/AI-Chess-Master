@@ -65,7 +65,7 @@ Chess.com-style presets are available:
 
 - **Bullet**: `1 min`, `1|1`, `2|1`
 - **Blitz**: `3 min`, `3|2`, `5 min`
-- **Rapid**: `10 min`, `15|10`, `30 min`
+- **Rapid**: `10 min`, `15|10`, `30 min`, `No limit`
 
 Format:
 - `X min` means no increment
@@ -79,16 +79,23 @@ Format:
 
 ### Planning Annotations
 - Right-drag from square to square: draw/remove arrow
-- Right-click same square: toggle circle marker
+- Right-click same square: toggle red square marker (full-square highlight)
+- Arrows and red markers are player-owned and auto-clear after that player makes their next move
 
 ### Keyboard
 - `U`: Undo
 - `R`: Redo
 - `M`: Return to menu
+- `F11`: Toggle fullscreen/window
+- `Esc`: Exit fullscreen to windowed mode
 
 ## UI and Gameplay Enhancements
 
 - Piece sprites (image-based board rendering, not Unicode glyphs)
+- Sound cues for move, check, and checkmate
+- Professional UI polish (board frame, cleaner panel, improved in-game buttons)
+- Board coordinates (`a-h`, `1-8`) rendered around the board
+- Right sidebar now includes player cards (name/avatar/time/captures) and move history with per-move think time
 - Captured-material score display for White/Black
 - Persistent game-over screen (window stays open)
 - Winner/loser display on game over
