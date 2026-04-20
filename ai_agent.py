@@ -142,9 +142,14 @@ PST_MAP = {
 
 
 class AIAgent:
-    """Stronger chess AI: negamax, TT, quiescence, better eval."""
+    """
+    Classical chess AI: negamax, alpha-beta, transposition table,
+    quiescence search, and a hand-tuned evaluation — augmented with an
+    optional experience-replay learning book that provides a soft
+    preference for moves that historically led to wins.
+    """
 
-    def __init__(self, board, color, time_limit):
+    def __init__(self, board, color, time_limit, learning_book=None):
         self.board = board
         self.color = color
         self.time_limit = max(1, int(time_limit))
@@ -152,6 +157,10 @@ class AIAgent:
         self.killers = {}
         self.nodes = 0
         self.cutoff_time = 0.0
+        # Optional LearningBook (see learning.py) — when provided, we use
+        # it to bias move ordering toward historically strong moves and
+        # to prefer proven opening choices.
+        self.learning_book = learning_book
 
     def _is_endgame(self, board):
         queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))
@@ -274,6 +283,12 @@ class AIAgent:
 
     def _order_moves(self, board, moves, ply, tt_move=None):
         killers = self.killers.get(ply, ())
+        # Only consult the learning book at the root and in shallow plies
+        # where repeated positions are most informative; going deep would
+        # both be noisy and expensive.
+        use_learning = (
+            self.learning_book is not None and ply <= 2
+        )
 
         def move_score(move):
             score = 0
@@ -287,6 +302,8 @@ class AIAgent:
                 score += 8_000
             if board.gives_check(move):
                 score += 900
+            if use_learning:
+                score += self.learning_book.ordering_bonus(board, move)
             return -score
 
         ordered = list(moves)
@@ -306,6 +323,20 @@ class AIAgent:
         if len(history) > 16:
             return None
 
+        # First, if the learning book has a confidently-strong move for
+        # this exact position, prefer it — it's a move that historically
+        # led to wins in our own games.
+        if self.learning_book is not None:
+            suggestion = self.learning_book.best_known_move(board)
+            if suggestion is not None:
+                uci, _rate, _samples = suggestion
+                try:
+                    learned_move = chess.Move.from_uci(uci)
+                    if learned_move in board.legal_moves:
+                        return learned_move
+                except ValueError:
+                    pass
+
         candidates = {}
         for line in OPENING_BOOK_LINES:
             if len(line) <= len(history):
@@ -318,6 +349,26 @@ class AIAgent:
                     continue
                 if move in board.legal_moves:
                     candidates[move] = candidates.get(move, 0) + 1
+
+        # If the built-in book has candidates, weight them by the
+        # learning book's win statistics when available — this lets a
+        # historically-losing opening line fall off the list over time.
+        if candidates and self.learning_book is not None:
+            weighted = {}
+            for move in candidates:
+                base = candidates[move]
+                stats = self.learning_book.get_stats(board).get(move.uci())
+                if stats:
+                    total = stats["w"] + stats["l"] + stats["d"]
+                    rate = self.learning_book._laplace_win_rate(
+                        stats["w"], stats["l"], stats["d"]
+                    )
+                    # Gentle re-weight: double a proven winner, halve a
+                    # proven loser. Books with no data keep their base.
+                    if total >= 2:
+                        base = max(1, int(base * (0.5 + rate)))
+                weighted[move] = base
+            candidates = weighted
 
         if not candidates:
             return None

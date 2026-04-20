@@ -10,6 +10,7 @@ import numpy as np
 
 from ai_agent import AIAgent
 from game import GameState
+from learning import LearningBook
 from UserInterface import UserInterface
 
 
@@ -51,8 +52,21 @@ class UnifiedChessApp:
         self.last_check_announce_ms = 0
         self._init_audio()
         self.menu_pieces = self._load_menu_pieces()
+        self.menu_logo = self._load_menu_logo()
         self.bg_particles = []
         self._init_menu_background_particles()
+
+        # Persistent learning book: loads accumulated experience from
+        # previous runs and is updated after every completed game.
+        self.learning_book = LearningBook()
+        # Remembers whether the current game was already ingested so we
+        # don't double-record on repeated result-text updates.
+        self._game_recorded = False
+        # Post-game auto-play (review): steps one ply forward every
+        # `auto_play_interval_ms`, watchable like a replay video.
+        self.auto_play_active = False
+        self.auto_play_interval_ms = 1800
+        self.auto_play_last_step_ms = 0
 
         self.state = "MENU"
         self.game = None
@@ -301,6 +315,54 @@ class UnifiedChessApp:
                     result[color].append(None)
         return result
 
+    def _load_menu_logo(self):
+        """
+        Load ``assets/logo.png`` as a transparent-background surface so it
+        sits naturally on the dark menu. Returns ``None`` if the file is
+        missing, in which case we fall back to the legacy knight + title.
+
+        White / near-white pixels in the source are softly faded out with
+        a smooth threshold curve, which keeps anti-aliased edges crisp
+        instead of producing jagged holes.
+        """
+        base = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base, "assets", "logo.png")
+        if not os.path.isfile(path):
+            return None
+        try:
+            raw = pygame.image.load(path).convert_alpha()
+        except Exception:
+            return None
+
+        # Copy into an independent surface we can freely edit.
+        surf = raw.copy()
+        try:
+            rgb = pygame.surfarray.pixels3d(surf)
+            alpha = pygame.surfarray.pixels_alpha(surf)
+        except Exception:
+            # Some locked/indexed surfaces can't expose pixel arrays —
+            # fall back to the raw image.
+            return raw
+
+        # How "white" each pixel is == min(R, G, B). Pure white → 255.
+        min_channel = np.minimum(np.minimum(rgb[:, :, 0], rgb[:, :, 1]), rgb[:, :, 2])
+
+        # Soft threshold: anything under 200 stays fully opaque; anything
+        # over 238 is erased; in between we interpolate for clean edges.
+        lower, upper = 200, 238
+        m = min_channel.astype(np.int16)
+        opaque_mask = m <= lower
+        transparent_mask = m >= upper
+        fade = ((upper - m) * 255 // (upper - lower)).clip(0, 255)
+        new_alpha = fade.astype(np.uint8)
+        new_alpha[opaque_mask] = 255
+        new_alpha[transparent_mask] = 0
+        # Preserve any original transparency the file may already have.
+        alpha[:] = np.minimum(alpha, new_alpha)
+
+        del rgb, alpha
+        return surf
+
     def _init_menu_background_particles(self):
         """
         Build a small set of slowly-drifting, semi-transparent chess pieces
@@ -477,11 +539,44 @@ class UnifiedChessApp:
         menu_w = max(80, panel_x + panel_w - menu_x)
         menu_rect = pygame.Rect(menu_x, row_y, menu_w, arrow_sz)
 
+        # Wide replay/pause button sits just above the arrow row. It's
+        # only drawn when the game is over, but we always reserve the
+        # rect so layout/click geometry is stable.
+        play_h = 42
+        play_rect = pygame.Rect(
+            panel_x, row_y - play_h - 10, panel_w, play_h
+        )
+
         self.game_buttons = {
             "undo": undo_rect,
             "redo": redo_rect,
             "menu": menu_rect,
+            "play": play_rect,
         }
+
+    def _record_finished_game_if_needed(self, winner_color):
+        """
+        Ingest a just-finished game into the persistent learning book,
+        exactly once per game. Runs in a background thread so a slow
+        disk write never stalls the UI. Safe to call from any end-of-
+        game path (time loss, checkmate, stalemate, resignation, ...).
+        """
+        if self._game_recorded:
+            return
+        if self.learning_book is None or not self.move_log:
+            return
+        self._game_recorded = True
+        move_log_snapshot = list(self.move_log)
+
+        def worker():
+            try:
+                self.learning_book.record_game(move_log_snapshot, winner_color)
+                self.learning_book.save()
+            except Exception:
+                # Never let a learning-book bug crash the app.
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def start_game(self, mode, human_color=None):
         self.mode = mode
@@ -489,6 +584,9 @@ class UnifiedChessApp:
         self.mode_label = f"{MODE_LABELS.get(mode, mode)} | {tc_label}"
         self.state = "GAME"
         self.game_over = False
+        self._game_recorded = False
+        self.auto_play_active = False
+        self.auto_play_last_step_ms = 0
         self.time_loss_text = ""
         self.dragging_piece_symbol = None
         self.drag_from_square = None
@@ -542,8 +640,12 @@ class UnifiedChessApp:
                 f"{MODE_LABELS['HUMAN_AI']} (You: {chosen}) | "
                 f"{self._format_time_control(self.base_time_seconds, self.increment_seconds)}"
             )
-            self.ai_white = None if self.human_color == chess.WHITE else AIAgent(self.game.board, chess.WHITE, 5)
-            self.ai_black = None if self.human_color == chess.BLACK else AIAgent(self.game.board, chess.BLACK, 5)
+            self.ai_white = None if self.human_color == chess.WHITE else AIAgent(
+                self.game.board, chess.WHITE, 5, learning_book=self.learning_book
+            )
+            self.ai_black = None if self.human_color == chess.BLACK else AIAgent(
+                self.game.board, chess.BLACK, 5, learning_book=self.learning_book
+            )
             if self.human_color == chess.WHITE:
                 self.white_label = "You"
                 self.black_label = "AI Bot"
@@ -555,8 +657,12 @@ class UnifiedChessApp:
                 self.white_is_bot = True
                 self.black_is_bot = False
         elif mode == "AI_AI":
-            self.ai_white = AIAgent(self.game.board, chess.WHITE, 5)
-            self.ai_black = AIAgent(self.game.board, chess.BLACK, 5)
+            self.ai_white = AIAgent(
+                self.game.board, chess.WHITE, 5, learning_book=self.learning_book
+            )
+            self.ai_black = AIAgent(
+                self.game.board, chess.BLACK, 5, learning_book=self.learning_book
+            )
             self.white_label = "AI White"
             self.black_label = "AI Black"
             self.white_is_bot = True
@@ -574,11 +680,50 @@ class UnifiedChessApp:
         self.pending_mode = None
         self.mode_label = ""
         self.move_log = []
+        self.auto_play_active = False
         with self.ai_state_lock:
             self.ai_pending_move = None
             self.ai_thinking = False
             self.ai_thinking_color = None
         self.position_token += 1
+
+    # ------------------------------------------------------------------ #
+    # Post-game auto-play (replay the finished game one ply at a time)
+    # ------------------------------------------------------------------ #
+    def _toggle_auto_play(self):
+        """Play/Stop toggle for the post-game replay."""
+        if self.state != "GAME" or not self.game_over or not self.move_log:
+            return
+        if self.auto_play_active:
+            self.auto_play_active = False
+            return
+        # If we're already at the end, jump to the start so PLAY starts
+        # the replay from move 1. Otherwise resume from the current ply.
+        current_ply = len(self.game.board.board.move_stack)
+        if current_ply >= len(self.move_log):
+            self._go_to_review_position(0)
+        self.auto_play_active = True
+        # Schedule the first step a touch earlier so the user feels
+        # immediate feedback when they press Play.
+        now_ms = pygame.time.get_ticks()
+        self.auto_play_last_step_ms = now_ms - (self.auto_play_interval_ms - 400)
+
+    def _tick_auto_play(self):
+        """Advance one ply if enough time passed; stop at the end."""
+        if not self.auto_play_active or not self.game_over or not self.game:
+            return
+        now_ms = pygame.time.get_ticks()
+        if now_ms - self.auto_play_last_step_ms < self.auto_play_interval_ms:
+            return
+        current_ply = len(self.game.board.board.move_stack)
+        if current_ply >= len(self.move_log):
+            self.auto_play_active = False
+            return
+        self._go_to_review_position(current_ply + 1)
+        # Keep the latest played move visible in the scrolling list.
+        if self.ui is not None:
+            self.ui.ensure_ply_visible(current_ply + 1)
+        self.auto_play_last_step_ms = now_ms
 
     def _human_can_move_now(self):
         if self.state != "GAME" or self.game_over or self.mode == "AI_AI":
@@ -621,6 +766,7 @@ class UnifiedChessApp:
                 termination="TIME",
                 message=self.time_loss_text,
             )
+            self._record_finished_game_if_needed(winner_color)
 
     def _update_game_result_text(self):
         result = self.game.get_result()
@@ -635,6 +781,7 @@ class UnifiedChessApp:
                 winner_color = None
             self.ui.set_game_result(winner_color=winner_color, termination=termination)
             self.game_over = True
+            self._record_finished_game_if_needed(winner_color)
 
     def _apply_move(self, move_uci):
         if not move_uci:
@@ -717,6 +864,15 @@ class UnifiedChessApp:
         self.ui.valid_moves = []
         self.arrows = []
         self.marked_squares = []
+        # Victory/defeat ornaments only belong on the true final
+        # position — hide them while the user is peeking at earlier
+        # plies and re-show them when they scrub back to the end.
+        if self.game_over and self.ui is not None:
+            at_final = len(board.move_stack) == len(self.move_log)
+            if self.ui.show_end_effects != at_final:
+                self.ui.show_end_effects = at_final
+                if at_final:
+                    self.ui.end_anim_start_ms = pygame.time.get_ticks()
         self.position_token += 1
         with self.ai_state_lock:
             self.ai_pending_move = None
@@ -1410,27 +1566,67 @@ class UnifiedChessApp:
 
             # Layout anchors scale with the window so it looks balanced in
             # both windowed and fullscreen modes.
-            logo_y   = int(H * 0.16)
-            title_y  = int(H * 0.315)
+            logo_y   = int(H * 0.22)
             sub_y    = int(H * 0.385)
             div_y    = int(H * 0.425)
             footer_y = H - 28
 
-            # Single centred white-knight emblem above the title.
-            white_knight = self.menu_pieces['white'][2]
-            logo_size = 100
             float_offset = 4 * math.sin(t / 900)
-            if white_knight:
-                sc_w = pygame.transform.smoothscale(
-                    white_knight, (logo_size, logo_size)
-                )
-                self.surface.blit(
-                    sc_w,
-                    sc_w.get_rect(center=(W // 2, logo_y + int(float_offset))),
-                )
 
-            title_surf = title_font.render("@Chess", True, TEXT_PRI)
-            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, title_y)))
+            if self.menu_logo is not None:
+                # Transparent-background branding artwork. We scale it to
+                # match the window while preserving aspect ratio, then
+                # place a soft accent glow behind it for an elegant
+                # "spotlit" feel.
+                src_w, src_h = self.menu_logo.get_size()
+                target_w = min(int(W * 0.58), 620)
+                target_h = int(src_h * (target_w / max(1, src_w)))
+                if target_h > int(H * 0.42):
+                    target_h = int(H * 0.42)
+                    target_w = int(src_w * (target_h / max(1, src_h)))
+                logo = pygame.transform.smoothscale(
+                    self.menu_logo, (target_w, target_h)
+                )
+                logo_rect = logo.get_rect(
+                    center=(W // 2, logo_y + int(float_offset))
+                )
+                # Soft accent halo behind the logo.
+                halo_r = max(target_w, target_h) // 2 + 40
+                halo = pygame.Surface(
+                    (halo_r * 2, halo_r * 2), pygame.SRCALPHA
+                )
+                for r in range(halo_r, 0, -18):
+                    intensity = max(0, 30 - int(30 * (r / halo_r)))
+                    if intensity <= 0:
+                        continue
+                    pygame.draw.circle(
+                        halo, (*ACCENT, intensity), (halo_r, halo_r), r
+                    )
+                self.surface.blit(
+                    halo, halo.get_rect(center=logo_rect.center)
+                )
+                self.surface.blit(logo, logo_rect)
+            else:
+                # Graceful fallback: original white-knight emblem + title
+                # when the branding file isn't installed yet.
+                title_y = int(H * 0.315)
+                white_knight = self.menu_pieces['white'][2]
+                logo_size = 100
+                if white_knight:
+                    sc_w = pygame.transform.smoothscale(
+                        white_knight, (logo_size, logo_size)
+                    )
+                    self.surface.blit(
+                        sc_w,
+                        sc_w.get_rect(
+                            center=(W // 2, int(H * 0.16) + int(float_offset))
+                        ),
+                    )
+                title_surf = title_font.render("@Chess", True, TEXT_PRI)
+                self.surface.blit(
+                    title_surf,
+                    title_surf.get_rect(center=(W // 2, title_y)),
+                )
 
             sub_surf = sub_font.render("Select a game mode to begin", True, TEXT_MUT)
             self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, sub_y)))
@@ -1599,13 +1795,23 @@ class UnifiedChessApp:
     def _draw_game(self):
         self.ui.white_time = self.white_time
         self.ui.black_time = self.black_time
+        # Surface a compact learning-book indicator alongside the mode
+        # label so the player can watch the AI's experience grow.
+        decorated_mode_label = self.mode_label
+        if self.learning_book is not None:
+            stats = self.learning_book.stats_summary()
+            if stats["games"] > 0:
+                decorated_mode_label = (
+                    f"{self.mode_label}  ·  Learned: "
+                    f"{stats['games']}g / {stats['positions']}p"
+                )
         self.ui.drawComponent(
             dragging_piece_symbol=self.dragging_piece_symbol,
             drag_pos=self.drag_pos,
             drag_from_square=self.drag_from_square,
             arrows=self._get_visible_arrows(),
             marked_squares=self._get_visible_marked_squares(),
-            mode_label=self.mode_label,
+            mode_label=decorated_mode_label,
             starting_fen=self.starting_fen,
             white_label=self.white_label,
             black_label=self.black_label,
@@ -1781,6 +1987,94 @@ class UnifiedChessApp:
         undo_rect = self.game_buttons["undo"]
         redo_rect = self.game_buttons["redo"]
         menu_rect = self.game_buttons["menu"]
+        play_rect = self.game_buttons.get("play")
+
+        def _render_play_button(rect, is_playing, hovered):
+            """Wide Play/Stop replay button — visible once the game ends."""
+            radius = 10
+            shadow = pygame.Surface(
+                (rect.width + 14, rect.height + 14), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow,
+                (0, 0, 0, 90),
+                shadow.get_rect().inflate(-4, -4),
+                border_radius=radius + 2,
+            )
+            self.surface.blit(shadow, (rect.x - 7, rect.y - 2))
+
+            if is_playing:
+                # Amber/pause palette.
+                top_c, bot_c = (176, 118, 38), (108, 70, 18)
+                border_c = (244, 188, 96)
+                fg_c     = (250, 230, 190)
+                glow_c   = (236, 170, 64)
+                label    = "Stop"
+            else:
+                # Green/play palette.
+                top_c, bot_c = (84, 124, 48), (46, 70, 22)
+                border_c = (160, 212, 96)
+                fg_c     = (230, 250, 196)
+                glow_c   = (129, 182, 76)
+                label    = "Play replay"
+
+            if hovered:
+                glow = pygame.Surface(
+                    (rect.width + 22, rect.height + 22), pygame.SRCALPHA
+                )
+                pygame.draw.rect(
+                    glow,
+                    (*glow_c, 65),
+                    glow.get_rect(),
+                    border_radius=radius + 8,
+                )
+                self.surface.blit(glow, (rect.x - 11, rect.y - 11))
+
+            _gradient_body(rect, top_c, bot_c, radius)
+
+            highlight = pygame.Surface(
+                (max(1, rect.width - 14), 2), pygame.SRCALPHA
+            )
+            highlight.fill((255, 255, 255, 48 if hovered else 32))
+            self.surface.blit(highlight, (rect.x + 7, rect.y + 3))
+
+            pygame.draw.rect(
+                self.surface, border_c, rect, 1, border_radius=radius
+            )
+
+            # Icon (triangle for Play, two bars for Stop) drawn on the left.
+            icon_cx = rect.x + 22
+            icon_cy = rect.centery
+            if is_playing:
+                bar_w = 4
+                bar_h = 14
+                gap_w = 4
+                pygame.draw.rect(
+                    self.surface,
+                    fg_c,
+                    (icon_cx - bar_w - gap_w // 2, icon_cy - bar_h // 2, bar_w, bar_h),
+                    border_radius=1,
+                )
+                pygame.draw.rect(
+                    self.surface,
+                    fg_c,
+                    (icon_cx + gap_w // 2, icon_cy - bar_h // 2, bar_w, bar_h),
+                    border_radius=1,
+                )
+            else:
+                s = 8
+                pts = [
+                    (icon_cx - s + 2, icon_cy - s),
+                    (icon_cx + s + 2, icon_cy),
+                    (icon_cx - s + 2, icon_cy + s),
+                ]
+                pygame.draw.polygon(self.surface, fg_c, pts)
+
+            text = button_font.render(label, True, fg_c)
+            text_rect = text.get_rect(center=rect.center)
+            text_rect.x += 10  # nudge right so it doesn't overlap the icon
+            self.surface.blit(text, text_rect)
+
         _render_arrow_button(
             undo_rect, "left",
             undo_rect.collidepoint(mouse_pos) and can_undo,
@@ -1791,6 +2085,12 @@ class UnifiedChessApp:
             redo_rect.collidepoint(mouse_pos) and can_redo,
             enabled=can_redo,
         )
+        if self.game_over and play_rect is not None:
+            _render_play_button(
+                play_rect,
+                self.auto_play_active,
+                play_rect.collidepoint(mouse_pos),
+            )
         _render_menu_button(menu_rect, menu_rect.collidepoint(mouse_pos))
         pygame.display.flip()
 
@@ -1845,10 +2145,33 @@ class UnifiedChessApp:
                 self._redo_move()
             elif event.key == pygame.K_m:
                 self.go_to_menu()
+            elif event.key == pygame.K_SPACE and self.game_over:
+                self._toggle_auto_play()
             return
 
+        # Mouse-wheel scroll over the move-history panel pages through
+        # older / newer rows. Works for both live play and review.
+        if event.type == pygame.MOUSEWHEEL and self.ui is not None:
+            mouse_pos = pygame.mouse.get_pos()
+            if self.ui.history_view_rect.collidepoint(mouse_pos):
+                # event.y > 0 means wheel up → older rows.
+                self.ui.scroll_history(event.y)
+                return
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Play button is only interactive after the game ends.
+            play_rect = self.game_buttons.get("play")
+            if (
+                self.game_over
+                and play_rect is not None
+                and play_rect.collidepoint(event.pos)
+            ):
+                self._toggle_auto_play()
+                return
+
             for key, rect in self.game_buttons.items():
+                if key == "play":
+                    continue
                 if rect.collidepoint(event.pos):
                     if key == "undo":
                         self._undo_move()
@@ -1860,11 +2183,14 @@ class UnifiedChessApp:
 
             # Review-mode: once the game is finished, clicking a move row
             # in the history jumps the board to that position without
-            # resuming the game.
+            # resuming the game. This also pauses auto-play so the user
+            # can pick a spot and then press Play to continue from there.
             if self.game_over and self.ui is not None:
                 clicked_ply = self.ui.get_history_click_ply(event.pos)
                 if clicked_ply is not None:
+                    self.auto_play_active = False
                     self._go_to_review_position(clicked_ply)
+                    self.ui.ensure_ply_visible(clicked_ply)
                     return
 
             self.left_down_pos = event.pos
@@ -1957,6 +2283,7 @@ class UnifiedChessApp:
             elif self.state == "GAME":
                 self._update_timers()
                 self._maybe_make_ai_move()
+                self._tick_auto_play()
                 self._draw_game()
 
             self.clock.tick(FPS)

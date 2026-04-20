@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import pygame
@@ -70,15 +71,22 @@ class UserInterface:
         self.valid_moves = []
         self.playerColor = chess.WHITE
         self.allow_both_colors = True
+        # Move-history scroll state. 0 = showing the latest rows;
+        # positive values scroll further into the past.
+        self.history_scroll_offset = 0
+        self.history_view_rect = pygame.Rect(0, 0, 0, 0)
+        self.history_max_scroll = 0
         self.white_time = 300
         self.black_time = 300
         self.show_clock = True
         self.game_result_text = ""
         self.game_winner_color = None
         self.game_termination = ""
-        self.fallen_loser_color = None
-        self.fall_anim_start_ms = None
-        self.fall_anim_duration_ms = 700
+        # End-of-game ceremony (loser raises a white surrender flag,
+        # winner is crowned). Animation timestamp + display gate.
+        self.end_anim_start_ms = None
+        self.end_anim_duration_ms = 800
+        self.show_end_effects = False
 
         self.LIGHT_SQUARE = (240, 217, 181)
         self.DARK_SQUARE = (181, 136, 99)
@@ -275,18 +283,19 @@ class UserInterface:
         self.game_result_text = ""
         self.game_winner_color = None
         self.game_termination = ""
-        self.fallen_loser_color = None
-        self.fall_anim_start_ms = None
+        self.end_anim_start_ms = None
+        self.show_end_effects = False
 
     def set_game_result(self, winner_color=None, termination="", message=None):
         self.game_winner_color = winner_color
         self.game_termination = termination or ""
-        self.fall_anim_start_ms = None
+        # Trigger the rise-animation for the victory crown / surrender flag.
         if winner_color in (chess.WHITE, chess.BLACK):
-            self.fallen_loser_color = not winner_color
-            self.fall_anim_start_ms = pygame.time.get_ticks()
+            self.end_anim_start_ms = pygame.time.get_ticks()
+            self.show_end_effects = True
         else:
-            self.fallen_loser_color = None
+            self.end_anim_start_ms = None
+            self.show_end_effects = False
         if message is not None:
             self.game_result_text = message
             return
@@ -300,35 +309,182 @@ class UserInterface:
                 base = f"{base} ({self.game_termination})"
             self.game_result_text = base
 
-    def draw_fallen_king(self, loser_color, progress=1.0):
-        king_square = self.board.board.king(loser_color)
-        if king_square is None:
+    def _draw_end_of_game_effects(self):
+        """
+        Post-game ornaments:
+          * Loser's king holds up a white surrender flag on a raised pole.
+          * Winner's king is crowned with a jeweled gold crown.
+        Both ornaments animate in (rise + fade), then gently idle
+        (gentle sway for the flag, soft shimmer for the crown).
+        """
+        if not self.show_end_effects:
             return
-        king_symbol = "K" if loser_color == chess.WHITE else "k"
-        sprite = self.piece_images.get(king_symbol)
-        if sprite is None:
+        winner = self.game_winner_color
+        if winner not in (chess.WHITE, chess.BLACK):
             return
 
-        # Ease-out makes the fall feel more natural.
-        p = max(0.0, min(1.0, float(progress)))
-        eased = 1.0 - ((1.0 - p) ** 3)
-        center_x, center_y = self.square_center(king_square)
-        shadow_w = int(self.square_size * (0.3 + 0.32 * eased))
-        shadow_h = int(self.square_size * (0.08 + 0.12 * eased))
-        shadow_rect = pygame.Rect(0, 0, shadow_w, shadow_h)
-        shadow_rect.center = (center_x, center_y + int(self.square_size * (0.05 + 0.25 * eased)))
-        pygame.draw.ellipse(self.surface, (40, 40, 40), shadow_rect)
+        now = pygame.time.get_ticks()
+        elapsed = now - (self.end_anim_start_ms or now)
+        rise = max(0.0, min(1.0, elapsed / float(self.end_anim_duration_ms)))
+        # Ease-out so the rise feels smooth rather than linear.
+        rise_eased = 1.0 - ((1.0 - rise) ** 3)
+        idle_t = max(0.0, (elapsed - self.end_anim_duration_ms) / 1000.0)
 
-        target_angle = 105 if loser_color == chess.BLACK else -105
-        angle = target_angle * eased
-        scale = 1.0 + (0.03 * eased)
-        fallen = pygame.transform.rotozoom(sprite, angle, scale)
-        x_shift = int((self.square_size * 0.08) * eased * (1 if loser_color == chess.BLACK else -1))
-        y_shift = int((self.square_size * 0.24) * eased)
-        fallen_rect = fallen.get_rect(
-            center=(center_x + x_shift, center_y + y_shift)
+        loser = not winner
+        winner_sq = self.board.board.king(winner)
+        loser_sq = self.board.board.king(loser)
+        if loser_sq is not None:
+            self._draw_surrender_flag(loser_sq, rise_eased, idle_t)
+        if winner_sq is not None:
+            self._draw_victory_crown(winner_sq, rise_eased, idle_t)
+
+    def _draw_surrender_flag(self, king_square, rise, idle_t):
+        """White surrender flag, classic 'I yield' symbol, rising on a pole."""
+        cx, cy = self.square_center(king_square)
+        sq = self.square_size
+
+        # The pole extends diagonally from a point near the king's
+        # bottom-right to an anchor above the king's head.
+        base_x, base_y = cx + int(sq * 0.12), cy + int(sq * 0.28)
+        full_x, full_y = cx + int(sq * 0.22), cy - int(sq * 0.52)
+        top_x = int(base_x + (full_x - base_x) * rise)
+        top_y = int(base_y + (full_y - base_y) * rise)
+        pygame.draw.line(
+            self.surface, (40, 30, 20), (base_x, base_y), (top_x, top_y), 3
         )
-        self.surface.blit(fallen, fallen_rect)
+        # Brass finial at the top of the pole.
+        pygame.draw.circle(self.surface, (190, 155, 85), (top_x, top_y), 4)
+        pygame.draw.circle(self.surface, (110, 85, 30), (top_x, top_y), 4, 1)
+
+        if rise < 0.25:
+            return
+
+        unfurl = min(1.0, (rise - 0.25) / 0.75)
+        flag_w = int(sq * 0.52 * unfurl)
+        flag_h = int(sq * 0.32)
+        sway = int(2 * math.sin(idle_t * 3.2))
+        flag_rect = pygame.Rect(top_x + sway, top_y, flag_w, flag_h)
+
+        # Soft drop shadow for depth on the board.
+        if flag_w > 0:
+            shadow_surf = pygame.Surface(
+                (flag_w + 10, flag_h + 10), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow_surf, (0, 0, 0, 110),
+                (5, 5, flag_w, flag_h),
+                border_radius=3,
+            )
+            self.surface.blit(
+                shadow_surf, (flag_rect.x - 5, flag_rect.y - 5)
+            )
+
+        # Flag body: two-tone white with a subtle fold line.
+        pygame.draw.rect(self.surface, (252, 250, 246), flag_rect, border_radius=3)
+        pygame.draw.rect(self.surface, (195, 190, 180), flag_rect, 1, border_radius=3)
+        if flag_rect.width >= 12:
+            mid_x = flag_rect.x + flag_rect.width // 2
+            pygame.draw.line(
+                self.surface,
+                (225, 220, 210),
+                (mid_x, flag_rect.top + 3),
+                (mid_x, flag_rect.bottom - 3),
+                1,
+            )
+
+    def _draw_victory_crown(self, king_square, rise, idle_t):
+        """Ornate gold crown with jeweled points, rising above the king."""
+        cx, cy = self.square_center(king_square)
+        sq = self.square_size
+
+        # Crown hovers above the king's head; animates up from cy.
+        target_top_y = cy - int(sq * 0.56)
+        current_top_y = int(cy + (target_top_y - cy) * rise)
+
+        if rise < 0.15:
+            return
+
+        # Geometry.
+        width      = int(sq * 0.58)
+        band_h     = int(sq * 0.11)
+        point_h    = int(sq * 0.20)
+        inner_dip  = int(sq * 0.05)
+        band_y     = current_top_y + point_h
+
+        # Soft glowing halo behind the crown for "victory" flair.
+        halo_alpha = int(90 * rise)
+        halo_r = int(sq * 0.44)
+        halo_surf = pygame.Surface((halo_r * 2, halo_r * 2), pygame.SRCALPHA)
+        for r in range(halo_r, 0, -14):
+            intensity = max(0, halo_alpha - int(halo_alpha * (r / halo_r)))
+            if intensity <= 0:
+                continue
+            pygame.draw.circle(
+                halo_surf, (255, 210, 80, intensity), (halo_r, halo_r), r
+            )
+        self.surface.blit(
+            halo_surf,
+            halo_surf.get_rect(center=(cx, current_top_y + point_h // 2)),
+        )
+
+        # Shimmer modulates the gold tone slightly over time.
+        shimmer = 0.88 + 0.12 * math.sin(idle_t * 2.5)
+        gold_lit   = (int(238 * shimmer), int(198 * shimmer), int(70 * shimmer))
+        gold_base  = (int(198 * shimmer), int(158 * shimmer), int(40 * shimmer))
+        gold_edge  = (96, 74, 18)
+        jewel_red  = (205, 55, 55)
+        jewel_edge = (110, 24, 24)
+
+        # Crown band (lower part).
+        band_rect = pygame.Rect(cx - width // 2, band_y, width, band_h)
+        self._draw_rounded_gradient(
+            band_rect, top_color=gold_lit, bot_color=gold_base, radius=3
+        )
+        pygame.draw.rect(self.surface, gold_edge, band_rect, 1, border_radius=3)
+
+        # Crown points (merlons) rising from the band.
+        num_points = 5
+        for i in range(num_points):
+            px = band_rect.left + int((i + 0.5) * width / num_points)
+            base_l = px - int(sq * 0.045)
+            base_r = px + int(sq * 0.045)
+            tip_y = current_top_y
+            pygame.draw.polygon(
+                self.surface,
+                gold_lit,
+                [(base_l, band_rect.top + 1),
+                 (px, tip_y),
+                 (base_r, band_rect.top + 1)],
+            )
+            pygame.draw.polygon(
+                self.surface,
+                gold_edge,
+                [(base_l, band_rect.top + 1),
+                 (px, tip_y),
+                 (base_r, band_rect.top + 1)],
+                1,
+            )
+            # Ruby/jewel at the tip.
+            jewel_r = max(2, int(sq * 0.025))
+            pygame.draw.circle(self.surface, jewel_red,  (px, tip_y), jewel_r)
+            pygame.draw.circle(self.surface, jewel_edge, (px, tip_y), jewel_r, 1)
+
+        # Inner dip line between points for a subtle regal detail.
+        dip_y = band_rect.top + band_h // 2
+        for i in range(num_points - 1):
+            x1 = band_rect.left + int((i + 1) * width / num_points) - inner_dip // 2
+            x2 = band_rect.left + int((i + 1) * width / num_points) + inner_dip // 2
+            pygame.draw.line(
+                self.surface, gold_edge, (x1, dip_y), (x2, dip_y), 1
+            )
+
+        # Three small jewels centered on the band.
+        if rise >= 0.6:
+            for i, hue in enumerate(((60, 180, 240), (220, 220, 220), (60, 180, 240))):
+                jx = cx + (i - 1) * int(sq * 0.12)
+                jy = band_rect.centery
+                pygame.draw.circle(self.surface, hue, (jx, jy), max(2, int(sq * 0.022)))
+                pygame.draw.circle(self.surface, gold_edge, (jx, jy), max(2, int(sq * 0.022)), 1)
 
     def build_move_from_squares(self, from_square, to_square):
         if from_square is None or to_square is None or from_square == to_square:
@@ -894,8 +1050,25 @@ class UserInterface:
         row_start_y = header_y + 24
         row_h = 20
         visible_rows = max(1, (rect.height - (row_start_y - rect.y) - 6) // row_h)
-        is_last_pair = len(rows) > visible_rows
-        rows = rows[-visible_rows:]
+
+        # Scrolling support — clamp offset and slice the visible window.
+        total_rows = len(rows)
+        max_offset = max(0, total_rows - visible_rows)
+        self.history_max_scroll = max_offset
+        if self.history_scroll_offset > max_offset:
+            self.history_scroll_offset = max_offset
+        if self.history_scroll_offset < 0:
+            self.history_scroll_offset = 0
+        offset = self.history_scroll_offset
+        start_idx = max(0, total_rows - visible_rows - offset)
+        end_idx = max(0, total_rows - offset)
+        is_last_pair = start_idx > 0  # rows above the view exist
+        rows = rows[start_idx:end_idx]
+
+        # Remember the interactive area so mousewheel events can target it.
+        self.history_view_rect = pygame.Rect(
+            rect.x, row_start_y, rect.width, visible_rows * row_h
+        )
 
         # The ply currently shown on the board (may differ from latest when
         # we're reviewing a finished game).
@@ -986,6 +1159,64 @@ class UserInterface:
             dots = self.small_font.render("…", True, self.SUBTLE_TEXT)
             self.surface.blit(dots, (rect.centerx - 4, row_start_y - 14))
 
+        # Vertical scrollbar indicator on the right edge of the history.
+        if max_offset > 0:
+            track_x = rect.right - 6
+            track_y = row_start_y
+            track_h = visible_rows * row_h
+            pygame.draw.rect(
+                self.surface,
+                (52, 50, 46),
+                (track_x, track_y, 3, track_h),
+                border_radius=1,
+            )
+            thumb_h = max(16, int(track_h * visible_rows / total_rows))
+            frac = 0 if max_offset == 0 else offset / max_offset
+            thumb_y = int(track_y + (track_h - thumb_h) * (1 - frac))
+            pygame.draw.rect(
+                self.surface,
+                self.ACCENT,
+                (track_x, thumb_y, 3, thumb_h),
+                border_radius=1,
+            )
+
+    def scroll_history(self, rows):
+        """
+        Adjust the move-history scroll offset. Positive ``rows`` scrolls
+        up (older moves), negative scrolls down toward the latest moves.
+        """
+        self.history_scroll_offset = max(
+            0,
+            min(
+                getattr(self, "history_max_scroll", 0),
+                self.history_scroll_offset + rows,
+            ),
+        )
+
+    def ensure_ply_visible(self, ply):
+        """
+        Adjust the scroll offset so the row of the given half-move index
+        is inside the currently visible window of the move history.
+        """
+        if ply <= 0:
+            return
+        target_row = (ply - 1) // 2
+        # We need the total row count; reuse what the last draw computed.
+        max_off = getattr(self, "history_max_scroll", 0)
+        if max_off <= 0:
+            return
+        # If the target row is above the current view (scrolled too much),
+        # reduce offset. If below (scrolled too little), increase it.
+        total_rows = max_off + (self.history_view_rect.height // 20 or 1)
+        visible = self.history_view_rect.height // 20 or 1
+        bottom_visible_row = total_rows - 1 - self.history_scroll_offset
+        top_visible_row = bottom_visible_row - visible + 1
+        if target_row < top_visible_row:
+            self.history_scroll_offset = max(0, total_rows - 1 - target_row - (visible - 1))
+        elif target_row > bottom_visible_row:
+            self.history_scroll_offset = max(0, total_rows - 1 - target_row)
+        self.history_scroll_offset = max(0, min(max_off, self.history_scroll_offset))
+
     def get_history_click_ply(self, pos):
         """Return the half-move (ply) index at `pos`, or None if not on a cell."""
         for cell in getattr(self, "_history_cells", []):
@@ -1013,17 +1244,6 @@ class UserInterface:
         arrows = arrows or []
         marked_squares = set(marked_squares or [])
         move_log = move_log or []
-        fallen_loser_color = None
-        fallen_king_square = None
-        fall_progress = 1.0
-        if self.fallen_loser_color in (chess.WHITE, chess.BLACK):
-            fallen_loser_color = self.fallen_loser_color
-            fallen_king_square = self.board.board.king(fallen_loser_color)
-            if self.fall_anim_start_ms is not None:
-                elapsed = pygame.time.get_ticks() - self.fall_anim_start_ms
-                fall_progress = max(0.0, min(1.0, elapsed / self.fall_anim_duration_ms))
-            else:
-                fall_progress = 1.0
 
         self._draw_board_frame()
 
@@ -1095,7 +1315,7 @@ class UserInterface:
                 square = chess.square(file_idx, rank_idx)
                 x, y = self._screen_coords(file_idx, rank_idx)
                 piece = self.board.board.piece_at(square)
-                if piece and square != drag_from_square and square != fallen_king_square:
+                if piece and square != drag_from_square:
                     sprite = self.piece_images[piece.symbol()]
                     rect = sprite.get_rect(
                         center=(x + self.square_size // 2, y + self.square_size // 2)
@@ -1108,8 +1328,11 @@ class UserInterface:
             sprite = self.piece_images[dragging_piece_symbol]
             rect = sprite.get_rect(center=drag_pos)
             self.surface.blit(sprite, rect)
-        elif fallen_loser_color is not None:
-            self.draw_fallen_king(fallen_loser_color, progress=fall_progress)
+
+        # Overlay post-game ornaments (white surrender flag for the
+        # loser, jeweled gold crown for the winner) on top of both kings.
+        # Only rendered at the real final position (`show_end_effects`).
+        self._draw_end_of_game_effects()
 
         # ── Sidebar content ────────────────────────────────────────────
         white_score, black_score = self.get_capture_scores(starting_fen=starting_fen)
@@ -1171,6 +1394,9 @@ class UserInterface:
         # menu button); a bit taller when the game-over banner is visible.
         controls_reserve = 62
         banner_reserve = 54 if self.game_result_text else 0
+        # Reserve space for the Play/Stop replay button that appears
+        # above the arrow row once the game is over.
+        play_reserve = 52 if self.game_result_text else 0
 
         # Keep the side panel in sync with board orientation: the player's
         # own side is always at the bottom, opponent at the top.
@@ -1221,7 +1447,7 @@ class UserInterface:
 
         # Moves history now occupies the full remaining sidebar height.
         history_top = y_cur
-        history_bottom = panel_rect.bottom - controls_reserve - banner_reserve - 10
+        history_bottom = panel_rect.bottom - controls_reserve - banner_reserve - play_reserve - 10
         history_rect = pygame.Rect(cx, history_top, cw, history_bottom - history_top)
         if history_rect.height > 60:
             self._draw_move_history(history_rect, move_log)
