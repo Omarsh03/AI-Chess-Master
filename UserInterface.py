@@ -68,21 +68,29 @@ class UserInterface:
 
         self.LIGHT_SQUARE = (240, 217, 181)
         self.DARK_SQUARE = (181, 136, 99)
-        self.SELECTED_COLOR = (130, 151, 105)
-        self.VALID_MOVE_COLOR = (186, 202, 43)
+        self.SELECTED_COLOR = (106, 138, 82)
+        self.VALID_MOVE_COLOR = (106, 138, 82)
         self.LAST_MOVE_COLOR = (205, 210, 106)
-        self.TEXT_COLOR = (28, 30, 35)
-        self.PANEL_BG = (248, 249, 252)
-        self.PANEL_BORDER = (200, 206, 218)
+        self.TEXT_COLOR = (212, 210, 202)
+        self.PANEL_BG = (36, 34, 31)
+        self.PANEL_BORDER = (58, 55, 51)
+        self.CARD_BG = (48, 46, 43)
+        self.CARD_BORDER = (66, 63, 59)
         self.ARROW_COLOR = (30, 144, 255)
+        self.ARROW_WHITE = (255, 190, 0)
+        self.ARROW_BLACK = (80, 200, 255)
         self.MARKER_COLOR = (214, 110, 110)
-        self.APP_BG = (26, 30, 38)
-        self.BOARD_FRAME_DARK = (48, 54, 66)
-        self.BOARD_FRAME_LIGHT = (84, 93, 112)
-        self.SUBTLE_TEXT = (90, 98, 114)
-        self.ACCENT = (75, 124, 211)
-        self.GOOD = (30, 138, 67)
-        self.BAD = (170, 45, 45)
+        self.APP_BG = (22, 21, 18)
+        self.BOARD_FRAME_DARK = (28, 26, 24)
+        self.BOARD_FRAME_LIGHT = (52, 50, 46)
+        self.SUBTLE_TEXT = (135, 130, 122)
+        self.ACCENT = (129, 182, 76)
+        self.GOOD = (129, 182, 76)
+        self.BAD = (200, 75, 75)
+        self.CLOCK_ACTIVE_FG = (240, 240, 230)
+        self.CLOCK_ACTIVE_BG = (35, 60, 18)
+        self.CLOCK_INACTIVE_FG = (110, 107, 100)
+        self.CLOCK_INACTIVE_BG = (42, 40, 37)
 
         pygame.font.init()
         self.info_font = pygame.font.Font(None, 30)
@@ -165,19 +173,53 @@ class UserInterface:
         x, y = self._screen_coords(file_idx, rank_idx)
         return (x + self.square_size // 2, y + self.square_size // 2)
 
-    def draw_arrow(self, from_square, to_square, color=None):
+    def draw_arrow(self, from_square, to_square, color=None, owner=None, number=None):
+        import chess as _chess
+        if color is None:
+            if owner == _chess.WHITE:
+                color = self.ARROW_WHITE
+            elif owner == _chess.BLACK:
+                color = self.ARROW_BLACK
+            else:
+                color = self.ARROW_COLOR
+
         start = self.square_center(from_square)
         end = self.square_center(to_square)
-        arrow_color = color if color is not None else self.ARROW_COLOR
-        pygame.draw.line(self.surface, arrow_color, start, end, 5)
 
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = max(1, (dx * dx + dy * dy) ** 0.5)
-        ux = dx / length
-        uy = dy / length
-        head_len = 16
-        head_w = 10
+        f1 = _chess.square_file(from_square)
+        r1 = _chess.square_rank(from_square)
+        f2 = _chess.square_file(to_square)
+        r2 = _chess.square_rank(to_square)
+        df = abs(f2 - f1)
+        dr = abs(r2 - r1)
+        is_knight_move = (df == 2 and dr == 1) or (df == 1 and dr == 2)
+
+        head_len = 18
+        head_w = 11
+
+        if is_knight_move:
+            # L-shaped: move horizontally first, then vertically
+            corner = self.square_center(_chess.square(f2, r1))
+            pygame.draw.line(self.surface, color, start, corner, 6)
+            dx = end[0] - corner[0]
+            dy = end[1] - corner[1]
+            seg_len = max(1, (dx * dx + dy * dy) ** 0.5)
+            ux = dx / seg_len
+            uy = dy / seg_len
+            shaft_end = (end[0] - ux * head_len, end[1] - uy * head_len)
+            pygame.draw.line(self.surface, color, corner, shaft_end, 6)
+            # number label at the corner of the L
+            label_pos = corner
+        else:
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            length = max(1, (dx * dx + dy * dy) ** 0.5)
+            ux = dx / length
+            uy = dy / length
+            shaft_end = (end[0] - ux * head_len, end[1] - uy * head_len)
+            pygame.draw.line(self.surface, color, start, shaft_end, 6)
+            label_pos = (int((start[0] + end[0]) / 2), int((start[1] + end[1]) / 2))
+
         tip = (end[0], end[1])
         left = (
             end[0] - (ux * head_len) + (uy * head_w),
@@ -187,7 +229,17 @@ class UserInterface:
             end[0] - (ux * head_len) - (uy * head_w),
             end[1] - (uy * head_len) + (ux * head_w),
         )
-        pygame.draw.polygon(self.surface, arrow_color, [tip, left, right])
+        pygame.draw.polygon(self.surface, color, [tip, left, right])
+
+        if number is not None:
+            font_size = max(14, self.square_size // 3)
+            font = pygame.font.Font(None, font_size)
+            label = str(number)
+            text_surf = font.render(label, True, (255, 255, 255))
+            shadow_surf = font.render(label, True, (0, 0, 0))
+            rect = text_surf.get_rect(center=label_pos)
+            self.surface.blit(shadow_surf, rect.move(1, 1))
+            self.surface.blit(text_surf, rect)
 
     def draw_marker(self, square, color=None):
         marker_color = color if color is not None else self.MARKER_COLOR
@@ -358,15 +410,31 @@ class UserInterface:
 
     def _draw_app_background(self):
         self.surface.fill(self.APP_BG)
-        top_band = pygame.Rect(0, 0, self.surface.get_width(), 54)
-        pygame.draw.rect(self.surface, (35, 40, 50), top_band)
-        pygame.draw.line(
-            self.surface,
-            (72, 82, 103),
-            (0, top_band.bottom - 1),
-            (self.surface.get_width(), top_band.bottom - 1),
-            1,
-        )
+
+    def _draw_valid_move_overlays(self):
+        if not self.valid_moves:
+            return
+        sz = self.square_size
+        for move in self.valid_moves:
+            if len(move) < 4:
+                continue
+            try:
+                to_sq = chess.parse_square(move[2:4])
+            except Exception:
+                continue
+            file_idx = chess.square_file(to_sq)
+            rank_idx = chess.square_rank(to_sq)
+            x, y = self._screen_coords(file_idx, rank_idx)
+            piece_at = self.board.board.piece_at(to_sq)
+            overlay = pygame.Surface((sz, sz), pygame.SRCALPHA)
+            if piece_at is None:
+                r = max(7, sz // 5)
+                pygame.draw.circle(overlay, (0, 0, 0, 72), (sz // 2, sz // 2), r)
+            else:
+                ring_w = max(5, sz // 7)
+                pygame.draw.circle(overlay, (0, 0, 0, 72), (sz // 2, sz // 2),
+                                   sz // 2 - 2, ring_w)
+            self.surface.blit(overlay, (x, y))
 
     def _draw_board_frame(self):
         outer = pygame.Rect(
@@ -434,83 +502,89 @@ class UserInterface:
                 rect = sprite.get_rect(center=(x, y))
                 self.surface.blit(sprite, rect)
 
-    def _draw_player_card(self, rect, name, is_bot, side_color, time_text, captured_symbols):
-        pygame.draw.rect(self.surface, (251, 252, 255), rect, border_radius=10)
-        pygame.draw.rect(self.surface, (207, 214, 226), rect, 1, border_radius=10)
+    def _draw_player_card(self, rect, name, is_bot, side_color, time_text, captured_symbols, is_active=False, score=0):
+        pygame.draw.rect(self.surface, self.CARD_BG, rect, border_radius=8)
+        pygame.draw.rect(self.surface, self.CARD_BORDER, rect, 1, border_radius=8)
 
-        avatar_size = 38
-        avatar_x = rect.x + 24
-        avatar_y = rect.y + 24
+        if is_active:
+            bar = pygame.Rect(rect.x, rect.y + 6, 3, rect.height - 12)
+            pygame.draw.rect(self.surface, self.ACCENT, bar, border_radius=2)
+
+        avatar_size = 34
+        avatar_x = rect.x + 20
+        avatar_y = rect.y + 22
         self._draw_avatar(avatar_x, avatar_y, avatar_size, is_bot, side_color)
 
         name_text = self.subtitle_font.render(name, True, self.TEXT_COLOR)
-        role_text = self.small_font.render("BOT" if is_bot else "PLAYER", True, self.SUBTLE_TEXT)
-        self.surface.blit(name_text, (avatar_x + 26, rect.y + 10))
-        self.surface.blit(role_text, (avatar_x + 26, rect.y + 33))
+        role_label = "BOT" if is_bot else "YOU"
+        role_text = self.small_font.render(role_label, True, self.SUBTLE_TEXT)
+        self.surface.blit(name_text, (avatar_x + 22, rect.y + 8))
+        self.surface.blit(role_text, (avatar_x + 22, rect.y + 28))
 
-        clock_label = self.small_font.render(time_text, True, self.ACCENT)
-        self.surface.blit(clock_label, (rect.right - clock_label.get_width() - 14, rect.y + 14))
+        if self.show_clock:
+            clock_w = 82
+            clock_h = 34
+            clock_rect = pygame.Rect(rect.right - clock_w - 10, rect.y + 8, clock_w, clock_h)
+            clock_bg = self.CLOCK_ACTIVE_BG if is_active else self.CLOCK_INACTIVE_BG
+            clock_fg = self.CLOCK_ACTIVE_FG if is_active else self.CLOCK_INACTIVE_FG
+            pygame.draw.rect(self.surface, clock_bg, clock_rect, border_radius=6)
+            if is_active:
+                pygame.draw.rect(self.surface, self.ACCENT, clock_rect, 1, border_radius=6)
+            clock_surf = self.info_font.render(time_text, True, clock_fg)
+            self.surface.blit(clock_surf, clock_surf.get_rect(center=clock_rect.center))
 
-        cap_label = self.small_font.render("Captured", True, self.SUBTLE_TEXT)
-        self.surface.blit(cap_label, (rect.x + 14, rect.y + 54))
-        self.draw_captured_strip(captured_symbols, rect.x + 14, rect.y + 74, rect.width - 28)
+        sep_y = rect.y + 50
+        pygame.draw.line(self.surface, self.CARD_BORDER, (rect.x + 10, sep_y), (rect.right - 10, sep_y), 1)
+
+        cap_x = rect.x + 12
+        cap_y = sep_y + 7
+        if score > 0:
+            score_surf = self.small_font.render(f"+{score}", True, self.ACCENT)
+            self.surface.blit(score_surf, (cap_x, cap_y))
+            cap_x += score_surf.get_width() + 6
+        self.draw_captured_strip(captured_symbols, cap_x, cap_y, rect.right - cap_x - 10)
 
     def _draw_move_history(self, rect, move_log):
-        pygame.draw.rect(self.surface, (251, 252, 255), rect, border_radius=10)
-        pygame.draw.rect(self.surface, (207, 214, 226), rect, 1, border_radius=10)
+        pygame.draw.rect(self.surface, self.CARD_BG, rect, border_radius=8)
+        pygame.draw.rect(self.surface, self.CARD_BORDER, rect, 1, border_radius=8)
 
-        title = self.subtitle_font.render("Move History", True, self.TEXT_COLOR)
-        self.surface.blit(title, (rect.x + 14, rect.y + 10))
+        title = self.subtitle_font.render("Moves", True, self.TEXT_COLOR)
+        self.surface.blit(title, (rect.x + 12, rect.y + 8))
 
-        header_y = rect.y + 38
-        pygame.draw.line(
-            self.surface,
-            (221, 226, 235),
-            (rect.x + 12, header_y + 20),
-            (rect.right - 12, header_y + 20),
-            1,
-        )
+        header_y = rect.y + 28
+        pygame.draw.line(self.surface, (65, 62, 58),
+                         (rect.x + 8, header_y + 16), (rect.right - 8, header_y + 16), 1)
         no_header = self.small_font.render("#", True, self.SUBTLE_TEXT)
         w_header = self.small_font.render("White", True, self.SUBTLE_TEXT)
         b_header = self.small_font.render("Black", True, self.SUBTLE_TEXT)
-        self.surface.blit(no_header, (rect.x + 14, header_y))
-        self.surface.blit(w_header, (rect.x + 42, header_y))
-        self.surface.blit(b_header, (rect.x + rect.width // 2 + 24, header_y))
+        self.surface.blit(no_header, (rect.x + 10, header_y))
+        self.surface.blit(w_header, (rect.x + 36, header_y))
+        self.surface.blit(b_header, (rect.x + rect.width // 2 + 18, header_y))
 
         rows = []
         for idx, entry in enumerate(move_log):
             move_no = (idx // 2) + 1
             if idx % 2 == 0:
-                rows.append(
-                    {
-                        "no": move_no,
-                        "white": f"{entry.get('san', '-')} ({self._format_think_time(entry.get('think_seconds'))})",
-                        "black": "",
-                    }
-                )
+                rows.append({"no": move_no, "white": entry.get("san", "-"), "black": ""})
             elif rows:
-                rows[-1]["black"] = f"{entry.get('san', '-')} ({self._format_think_time(entry.get('think_seconds'))})"
+                rows[-1]["black"] = entry.get("san", "-")
 
-        row_start_y = header_y + 26
-        row_h = 22
-        visible_rows = max(1, (rect.height - (row_start_y - rect.y) - 10) // row_h)
+        row_start_y = header_y + 22
+        row_h = 20
+        visible_rows = max(1, (rect.height - (row_start_y - rect.y) - 6) // row_h)
         rows = rows[-visible_rows:]
 
         for i, row in enumerate(rows):
             y = row_start_y + i * row_h
             if i % 2 == 0:
-                pygame.draw.rect(
-                    self.surface,
-                    (246, 248, 252),
-                    (rect.x + 10, y - 1, rect.width - 20, row_h),
-                    border_radius=4,
-                )
+                pygame.draw.rect(self.surface, (55, 52, 48),
+                                 (rect.x + 6, y, rect.width - 12, row_h), border_radius=3)
             no_text = self.small_font.render(str(row["no"]), True, self.SUBTLE_TEXT)
             white_text = self.small_font.render(row["white"], True, self.TEXT_COLOR)
             black_text = self.small_font.render(row["black"], True, self.TEXT_COLOR)
-            self.surface.blit(no_text, (rect.x + 14, y))
-            self.surface.blit(white_text, (rect.x + 42, y))
-            self.surface.blit(black_text, (rect.x + rect.width // 2 + 24, y))
+            self.surface.blit(no_text, (rect.x + 10, y + 2))
+            self.surface.blit(white_text, (rect.x + 36, y + 2))
+            self.surface.blit(black_text, (rect.x + rect.width // 2 + 18, y + 2))
 
     def drawComponent(
         self,
@@ -552,10 +626,8 @@ class UserInterface:
             self.surface.get_width() - self.sidebar_x - self.margin,
             self.surface.get_height() - (self.margin * 2),
         )
-        panel_shadow = panel_rect.move(4, 5)
-        pygame.draw.rect(self.surface, (18, 22, 30), panel_shadow, border_radius=12)
-        pygame.draw.rect(self.surface, self.PANEL_BG, panel_rect, border_radius=12)
-        pygame.draw.rect(self.surface, self.PANEL_BORDER, panel_rect, 2, border_radius=12)
+        pygame.draw.rect(self.surface, self.PANEL_BG, panel_rect, border_radius=10)
+        pygame.draw.rect(self.surface, self.PANEL_BORDER, panel_rect, 1, border_radius=10)
 
         for rank_idx in range(8):
             for file_idx in range(8):
@@ -570,24 +642,19 @@ class UserInterface:
                     or chess.square_name(square) == self.last_move[2:4]
                 ):
                     color = self.LAST_MOVE_COLOR
-                elif any(chess.square_name(square) == move[2:4] for move in self.valid_moves):
-                    color = self.VALID_MOVE_COLOR
                 if square in marked_squares:
                     color = self.MARKER_COLOR
 
-                pygame.draw.rect(
-                    self.surface, color, (x, y, self.square_size, self.square_size)
-                )
+                pygame.draw.rect(self.surface, color, (x, y, self.square_size, self.square_size))
 
-        pygame.draw.rect(
-            self.surface,
-            (24, 28, 38),
-            (self.board_origin_x, self.board_origin_y, self.board_size, self.board_size),
-            1,
-        )
+        pygame.draw.rect(self.surface, (0, 0, 0),
+                         (self.board_origin_x, self.board_origin_y, self.board_size, self.board_size), 1)
 
-        for from_square, to_square in arrows:
-            self.draw_arrow(from_square, to_square)
+        for arrow in arrows:
+            if isinstance(arrow, dict):
+                self.draw_arrow(arrow["from"], arrow["to"], owner=arrow.get("owner"), number=arrow.get("number"))
+            else:
+                self.draw_arrow(arrow[0], arrow[1])
 
         self._draw_board_coordinates()
 
@@ -603,6 +670,8 @@ class UserInterface:
                     )
                     self.surface.blit(sprite, rect)
 
+        self._draw_valid_move_overlays()
+
         if dragging_piece_symbol and drag_pos:
             sprite = self.piece_images[dragging_piece_symbol]
             rect = sprite.get_rect(center=drag_pos)
@@ -610,97 +679,71 @@ class UserInterface:
         elif fallen_loser_color is not None:
             self.draw_fallen_king(fallen_loser_color, progress=fall_progress)
 
+        # ── Sidebar content ────────────────────────────────────────────
         white_score, black_score = self.get_capture_scores(starting_fen=starting_fen)
+        white_adv = max(0, white_score - black_score)
+        black_adv = max(0, black_score - white_score)
         white_captured, black_captured = self.get_captured_pieces(starting_fen=starting_fen)
-        score_diff = abs(white_score - black_score)
-        white_lead = white_score > black_score
-        black_lead = black_score > white_score
+        is_white_turn = self.board.board.turn == chess.WHITE
+
         if self.show_clock:
-            white_minutes = int(max(0, self.white_time) // 60)
-            white_seconds = int(max(0, self.white_time) % 60)
-            black_minutes = int(max(0, self.black_time) // 60)
-            black_seconds = int(max(0, self.black_time) % 60)
-            white_time_text = f"{white_minutes:02d}:{white_seconds:02d}"
-            black_time_text = f"{black_minutes:02d}:{black_seconds:02d}"
+            white_time_text = f"{int(max(0, self.white_time) // 60):02d}:{int(max(0, self.white_time) % 60):02d}"
+            black_time_text = f"{int(max(0, self.black_time) // 60):02d}:{int(max(0, self.black_time) % 60):02d}"
         else:
             white_time_text = "--:--"
             black_time_text = "--:--"
-        turn = "White" if self.board.board.turn == chess.WHITE else "Black"
-        turn_color = (40, 120, 40) if self.board.board.turn == chess.WHITE else (120, 40, 40)
 
-        header_y = self.margin + 12
-        title = self.title_font.render("Full Chess", True, self.TEXT_COLOR)
-        self.surface.blit(title, (self.sidebar_x + 18, header_y))
+        cx = panel_rect.x + 12
+        cw = panel_rect.width - 24
+        y_cur = panel_rect.y + 10
+
+        # Mode label
         if mode_label:
-            mode_text = self.small_font.render(f"Mode: {mode_label}", True, self.SUBTLE_TEXT)
-            self.surface.blit(mode_text, (self.sidebar_x + 18, header_y + 30))
+            mode_surf = self.small_font.render(mode_label, True, self.SUBTLE_TEXT)
+            self.surface.blit(mode_surf, (cx, y_cur))
+            y_cur += 22
 
-        turn_badge = pygame.Rect(self.sidebar_x + 16, header_y + 56, panel_rect.width - 32, 34)
-        turn_bg = (224, 244, 231) if self.board.board.turn == chess.WHITE else (246, 228, 228)
-        pygame.draw.rect(self.surface, turn_bg, turn_badge, border_radius=8)
-        pygame.draw.rect(self.surface, (195, 206, 214), turn_badge, 1, border_radius=8)
-        turn_text = self.badge_font.render(f"Turn: {turn}", True, turn_color)
-        self.surface.blit(turn_text, turn_text.get_rect(center=turn_badge.center))
+        # Turn dot indicator
+        turn_label = "White to move" if is_white_turn else "Black to move"
+        dot_color = (220, 220, 215) if is_white_turn else (50, 50, 50)
+        dot_outline = (150, 145, 138)
+        dot_x = cx + 8
+        dot_y = y_cur + 8
+        pygame.draw.circle(self.surface, dot_outline, (dot_x, dot_y), 7)
+        pygame.draw.circle(self.surface, dot_color, (dot_x, dot_y), 6)
+        turn_surf = self.small_font.render(turn_label, True, self.TEXT_COLOR)
+        self.surface.blit(turn_surf, (dot_x + 12, y_cur))
+        y_cur += 24
 
-        cards_top = turn_badge.bottom + 10
-        card_h = 118
-        top_card = pygame.Rect(self.sidebar_x + 16, cards_top, panel_rect.width - 32, card_h)
-        bottom_card = pygame.Rect(
-            self.sidebar_x + 16,
-            panel_rect.bottom - card_h - 16,
-            panel_rect.width - 32,
-            card_h,
-        )
-        history_rect = pygame.Rect(
-            self.sidebar_x + 16,
-            top_card.bottom + 10,
-            panel_rect.width - 32,
-            bottom_card.y - (top_card.bottom + 20),
-        )
+        card_h = 98
+        buttons_reserve = 170
 
-        self._draw_player_card(
-            top_card,
-            black_label,
-            black_is_bot,
-            chess.BLACK,
-            f"{black_time_text}   +{black_score}",
-            black_captured,
-        )
-        self._draw_player_card(
-            bottom_card,
-            white_label,
-            white_is_bot,
-            chess.WHITE,
-            f"{white_time_text}   +{white_score}",
-            white_captured,
-        )
+        black_card = pygame.Rect(cx, y_cur, cw, card_h)
+        self._draw_player_card(black_card, black_label, black_is_bot, chess.BLACK,
+                               black_time_text, black_captured,
+                               is_active=not is_white_turn, score=black_adv)
+        y_cur += card_h + 8
 
-        if history_rect.height > 80:
+        white_card_y = panel_rect.bottom - card_h - buttons_reserve
+        history_rect = pygame.Rect(cx, y_cur, cw, white_card_y - y_cur - 8)
+        if history_rect.height > 60:
             self._draw_move_history(history_rect, move_log)
 
-        if score_diff > 0:
-            if white_lead:
-                lead_text = self.small_font.render(f"White lead: +{score_diff}", True, self.GOOD)
-            else:
-                lead_text = self.small_font.render(f"Black lead: +{score_diff}", True, self.GOOD)
-            self.surface.blit(
-                lead_text,
-                (self.sidebar_x + panel_rect.width - lead_text.get_width() - 18, turn_badge.y - 24),
-            )
+        white_card = pygame.Rect(cx, white_card_y, cw, card_h)
+        self._draw_player_card(white_card, white_label, white_is_bot, chess.WHITE,
+                               white_time_text, white_captured,
+                               is_active=is_white_turn, score=white_adv)
 
-        if self.game_winner_color == chess.WHITE:
-            winner_surface = self.small_font.render("Winner: White", True, self.GOOD)
-            self.surface.blit(winner_surface, (bottom_card.x, bottom_card.y - 22))
-        elif self.game_winner_color == chess.BLACK:
-            winner_surface = self.small_font.render("Winner: Black", True, self.GOOD)
-            self.surface.blit(winner_surface, (top_card.x, top_card.y - 22))
-
+        # Game-over overlay banner
         if self.game_result_text:
-            result_surface = self.small_font.render(self.game_result_text, True, self.BAD)
-            self.surface.blit(
-                result_surface,
-                (self.sidebar_x + 18, panel_rect.bottom - 22),
-            )
+            banner_h = 38
+            banner_y = white_card.bottom + 10
+            if banner_y + banner_h < panel_rect.bottom - buttons_reserve + 10:
+                banner = pygame.Rect(cx, banner_y, cw, banner_h)
+                pygame.draw.rect(self.surface, (60, 22, 22), banner, border_radius=7)
+                pygame.draw.rect(self.surface, self.BAD, banner, 1, border_radius=7)
+                res_surf = self.small_font.render(self.game_result_text, True, (240, 180, 180))
+                self.surface.blit(res_surf, res_surf.get_rect(center=banner.center))
 
         if do_flip:
             pygame.display.flip()

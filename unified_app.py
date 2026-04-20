@@ -1,3 +1,5 @@
+import os
+import math
 import random
 import time
 import threading
@@ -24,7 +26,7 @@ MODE_LABELS = {
 TIME_CONTROL_GROUPS = [
     ("Bullet", [("1 min", 60, 0), ("1|1", 60, 1), ("2|1", 120, 1)]),
     ("Blitz", [("3 min", 180, 0), ("3|2", 180, 2), ("5 min", 300, 0)]),
-    ("Rapid", [("10 min", 600, 0), ("15|10", 900, 10), ("30 min", 1800, 0), ("No limit", -1, 0)]),
+    ("Rapid", [("10 min", 600, 0), ("15|10", 900, 10), ("30 min", 1800, 0)]),
 ]
 
 
@@ -39,7 +41,7 @@ class UnifiedChessApp:
         WINDOW_HEIGHT = max(self.windowed_size[1], display_info.current_h)
         WINDOW_WIDTH, WINDOW_HEIGHT = self.windowed_size
         self.surface = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Full Chess")
+        pygame.display.set_caption("@Chess")
         self.clock = pygame.time.Clock()
         self.running = True
         self.is_fullscreen = False
@@ -48,6 +50,7 @@ class UnifiedChessApp:
         self.sound_error = None
         self.last_check_announce_ms = 0
         self._init_audio()
+        self.menu_pieces = self._load_menu_pieces()
 
         self.state = "MENU"
         self.game = None
@@ -282,6 +285,20 @@ class UnifiedChessApp:
             return True
         return False
 
+    def _load_menu_pieces(self):
+        base = os.path.dirname(os.path.abspath(__file__))
+        order = ['king', 'queen', 'knight', 'bishop', 'rook', 'pawn']
+        result = {'white': [], 'black': []}
+        for k in order:
+            for color in ('white', 'black'):
+                path = os.path.join(base, "assets", "pieces", f"{color}_{k}.png")
+                try:
+                    img = pygame.image.load(path).convert_alpha()
+                    result[color].append(img)
+                except Exception:
+                    result[color].append(None)
+        return result
+
     def _build_menu_buttons(self):
         center_x = WINDOW_WIDTH // 2
         top = 250
@@ -304,42 +321,32 @@ class UnifiedChessApp:
             self.menu_buttons.append((mode_key, label, rect))
 
     def _build_color_buttons(self):
-        center_x = WINDOW_WIDTH // 2
-        top = 280
-        button_w = 320
-        button_h = 52
-        gap = 14
-        entries = [
-            ("WHITE", "Play as White"),
-            ("BLACK", "Play as Black"),
-            ("RANDOM", "Random Color"),
-            ("BACK", "Back"),
+        cx = WINDOW_WIDTH // 2
+        card_w, card_h = 210, 230
+        gap = 24
+        card_top = 195
+        self.color_buttons = [
+            ("WHITE", "White",  pygame.Rect(cx - gap//2 - card_w, card_top, card_w, card_h)),
+            ("BLACK", "Black",  pygame.Rect(cx + gap//2,           card_top, card_w, card_h)),
+            ("RANDOM", "Random Color", pygame.Rect(cx - 140, card_top + card_h + 22, 280, 50)),
+            ("BACK",   "Back",         pygame.Rect(cx - 90,  card_top + card_h + 88, 180, 46)),
         ]
-        self.color_buttons = []
-        for idx, (key, label) in enumerate(entries):
-            rect = pygame.Rect(
-                center_x - (button_w // 2),
-                top + idx * (button_h + gap),
-                button_w,
-                button_h,
-            )
-            self.color_buttons.append((key, label, rect))
 
     def _build_time_buttons(self):
         self.time_buttons = []
-        top = 150
+        top = 138
         left = (WINDOW_WIDTH // 2) - 260
         button_w = 160
-        button_h = 50
+        button_h = 46
         col_gap = 16
-        row_gap = 18
-        section_gap = 66
+        row_gap = 12
+        section_gap = 40
 
         y = top
         for category, options in TIME_CONTROL_GROUPS:
             header_y = y
             self.time_buttons.append(("HEADER", category, header_y))
-            y += 34
+            y += 36
             for col, (label, base_seconds, increment_seconds) in enumerate(options):
                 x = left + col * (button_w + col_gap)
                 rect = pygame.Rect(x, y, button_w, button_h)
@@ -348,11 +355,16 @@ class UnifiedChessApp:
                 )
             y += button_h + row_gap + section_gap
 
+        # No Limit as its own animated category row
+        nolimit_w = button_w * 3 + col_gap * 2
+        nolimit_rect = pygame.Rect(left, y, nolimit_w, button_h)
+        self.time_buttons.append(("NOLIMIT", "No Limit", nolimit_rect, -1, 0))
+
         back_w = 180
         back_h = 48
         self.time_back_button = pygame.Rect(
             (WINDOW_WIDTH // 2) - (back_w // 2),
-            WINDOW_HEIGHT - 80,
+            WINDOW_HEIGHT - 72,
             back_w,
             back_h,
         )
@@ -669,15 +681,22 @@ class UnifiedChessApp:
     def _toggle_arrow(self, from_square, to_square):
         if from_square is None or to_square is None or from_square == to_square:
             return
-        owner = self.game.board.board.turn if self.game else None
-        arrow = {"from": from_square, "to": to_square, "owner": owner}
-        if arrow in self.arrows:
-            self.arrows.remove(arrow)
+        piece = self.game.board.board.piece_at(from_square) if self.game else None
+        owner = piece.color if piece else (self.game.board.board.turn if self.game else None)
+        existing = next(
+            (a for a in self.arrows if a["from"] == from_square and a["to"] == to_square and a["owner"] == owner),
+            None,
+        )
+        if existing:
+            self.arrows.remove(existing)
+            # re-number remaining arrows
+            for i, a in enumerate(self.arrows):
+                a["number"] = i + 1
         else:
-            self.arrows.append(arrow)
+            self.arrows.append({"from": from_square, "to": to_square, "owner": owner, "number": len(self.arrows) + 1})
 
     def _get_visible_arrows(self):
-        return [(arrow["from"], arrow["to"]) for arrow in self.arrows]
+        return list(self.arrows)
 
     def _toggle_marker(self, square):
         if square is None:
@@ -762,67 +781,337 @@ class UnifiedChessApp:
         ).start()
 
     def _draw_menu(self):
-        self.surface.fill((36, 40, 50))
-        title_font = pygame.font.Font(None, 64)
-        subtitle_font = pygame.font.Font(None, 32)
-        button_font = pygame.font.Font(None, 36)
-        section_font = pygame.font.Font(None, 34)
+        W, H = WINDOW_WIDTH, WINDOW_HEIGHT
+        BG        = (22, 21, 18)
+        ACCENT    = (129, 182, 76)
+        BTN_DARK  = (42, 40, 36)
+        BTN_BORD  = (66, 63, 58)
+        TEXT_PRI  = (212, 210, 202)
+        TEXT_MUT  = (110, 107, 100)
+        RED_BG    = (48, 28, 28)
+        RED_BORD  = (105, 55, 55)
+        RED_FG    = (210, 170, 170)
 
-        title = title_font.render("Full Chess", True, (245, 245, 245))
-        self.surface.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, 130)))
+        t = pygame.time.get_ticks()
+        self.surface.fill(BG)
+        # top accent bar
+        pygame.draw.rect(self.surface, ACCENT, pygame.Rect(0, 0, W, 3))
 
+        btn_font  = pygame.font.Font(None, 34)
+        cat_font  = pygame.font.Font(None, 24)
         mouse_pos = pygame.mouse.get_pos()
-        if self.state == "MENU":
-            subtitle = subtitle_font.render("Choose a game mode", True, (210, 210, 210))
-            self.surface.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 190)))
-            for mode, label, rect in self.menu_buttons:
-                hovered = rect.collidepoint(mouse_pos)
-                color = (79, 153, 247) if hovered else (58, 112, 184)
-                pygame.draw.rect(self.surface, color, rect, border_radius=8)
-                text = button_font.render(label, True, (255, 255, 255))
-                self.surface.blit(text, text.get_rect(center=rect.center))
-        elif self.state == "MENU_COLOR":
-            subtitle = subtitle_font.render("Choose your color", True, (210, 210, 210))
-            self.surface.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 190)))
-            for key, label, rect in self.color_buttons:
-                hovered = rect.collidepoint(mouse_pos)
-                if key == "BACK":
-                    color = (130, 90, 90) if hovered else (108, 76, 76)
-                else:
-                    color = (79, 153, 247) if hovered else (58, 112, 184)
-                pygame.draw.rect(self.surface, color, rect, border_radius=8)
-                text = button_font.render(label, True, (255, 255, 255))
-                self.surface.blit(text, text.get_rect(center=rect.center))
-        else:
-            subtitle = subtitle_font.render("Choose time control", True, (210, 210, 210))
-            self.surface.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 112)))
 
+        # ── helpers ──────────────────────────────────────────────────────
+        def draw_btn(rect, label, hovered, selected=False, danger=False, font=None):
+            f = font or btn_font
+            if danger:
+                bg   = (65, 35, 35) if hovered else RED_BG
+                bord = RED_BORD
+                fg   = RED_FG
+            elif selected:
+                bg   = (55, 82, 30) if hovered else (44, 65, 22)
+                bord = ACCENT
+                fg   = (195, 230, 150)
+            elif hovered:
+                bg, bord, fg = ACCENT, ACCENT, BG
+            else:
+                bg, bord, fg = BTN_DARK, BTN_BORD, TEXT_PRI
+            pygame.draw.rect(self.surface, bg,   rect, border_radius=8)
+            pygame.draw.rect(self.surface, bord, rect, 1, border_radius=8)
+            surf = f.render(label, True, fg)
+            self.surface.blit(surf, surf.get_rect(center=rect.center))
+
+        def draw_back_arrow(rect, color):
+            bx = rect.left + 20
+            by = rect.centery
+            pygame.draw.line(self.surface, color, (bx, by), (bx - 8, by), 2)
+            pygame.draw.line(self.surface, color, (bx - 8, by), (bx - 4, by - 4), 2)
+            pygame.draw.line(self.surface, color, (bx - 8, by), (bx - 4, by + 4), 2)
+
+        def icon_badge(surface, cx, cy, w, h, color):
+            badge = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(badge, (*color, 38), (0, 0, w, h), border_radius=6)
+            surface.blit(badge, (cx - w // 2, cy - h // 2))
+
+        def draw_category_icon(surface, category, cx, cy, size, color):
+            icon_badge(surface, cx, cy, size + 10, size + 10, color)
+            if category == "Bullet":
+                # Bullet projectile: rounded body + pointed nose + animated speed lines
+                bw, bh = int(size * 0.42), int(size * 0.28)
+                # Animated x-offset: bullet slides right across icon then resets
+                phase = (t % 520) / 520
+                ox = int((phase - 0.3) * size * 0.7)  # -0.3..0.7 range
+                bx = cx + ox
+                # Speed lines (left of bullet)
+                for i, (dy2, llen) in enumerate([(- bh//2 + 1, int(size*0.28)),
+                                                  (0,            int(size*0.36)),
+                                                  (bh//2 - 1,   int(size*0.22))]):
+                    a_line = max(0, min(255, int(255 * (0.35 - phase) / 0.35))) if phase < 0.35 else 0
+                    a_line = max(0, 200 - i * 50) if phase > 0.1 else int(200 * phase / 0.1)
+                    ls = pygame.Surface((llen, 2), pygame.SRCALPHA)
+                    ls.fill((*color, a_line))
+                    surface.blit(ls, (bx - bw // 2 - llen - 2, cy + dy2 - 1))
+                # Bullet body
+                body_rect = pygame.Rect(bx - bw // 2, cy - bh // 2, bw, bh)
+                pygame.draw.rect(surface, color, body_rect, border_radius=3)
+                # Pointed nose (triangle to the right)
+                tip = int(size * 0.18)
+                pygame.draw.polygon(surface, color, [
+                    (bx + bw // 2, cy - bh // 2),
+                    (bx + bw // 2 + tip, cy),
+                    (bx + bw // 2, cy + bh // 2),
+                ])
+                # Base rim (darker bottom band)
+                rim = pygame.Rect(bx - bw // 2, cy + bh // 2 - 4, bw, 4)
+                rim_surf = pygame.Surface((bw, 4), pygame.SRCALPHA)
+                rim_surf.fill((*color, 140))
+                surface.blit(rim_surf, rim.topleft)
+
+            elif category == "Blitz":
+                # Bright flickering lightning bolt
+                flicker = 0.55 + 0.45 * abs(math.sin(t * math.pi / 70))
+                al = int(255 * flicker)
+                s = size
+                bolt = pygame.Surface((s + 6, s + 6), pygame.SRCALPHA)
+                bw2 = s + 6
+                pts = [
+                    (bw2 * 0.62, 0),
+                    (bw2 * 0.18, bw2 * 0.50),
+                    (bw2 * 0.48, bw2 * 0.50),
+                    (bw2 * 0.10, bw2 * 1.00),
+                    (bw2 * 0.78, bw2 * 0.46),
+                    (bw2 * 0.50, bw2 * 0.46),
+                ]
+                pygame.draw.polygon(bolt, (*color, al), pts)
+                # Bright core at high flicker
+                if flicker > 0.85:
+                    inner_pts = [(p[0] * 0.75 + bw2*0.12, p[1] * 0.75 + bw2*0.12) for p in pts]
+                    pygame.draw.polygon(bolt, (255, 255, 200, int(al * 0.5)), inner_pts)
+                surface.blit(bolt, (int(cx - bw2 // 2), int(cy - bw2 // 2)))
+
+            elif category == "Rapid":
+                # Professional ticking clock face
+                r = int(size * 0.46)
+                cx2, cy2 = int(cx), int(cy)
+                # Clock face (filled dark center)
+                face = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(face, (*color, 25), (r + 2, r + 2), r)
+                surface.blit(face, (cx2 - r - 2, cy2 - r - 2))
+                pygame.draw.circle(surface, color, (cx2, cy2), r, 2)
+                # 12 tick marks
+                for i in range(12):
+                    ang = i * math.pi / 6 - math.pi / 2
+                    tlen = 4 if i % 3 == 0 else 2
+                    tw   = 2 if i % 3 == 0 else 1
+                    x1 = cx2 + int(r * math.cos(ang))
+                    y1 = cy2 + int(r * math.sin(ang))
+                    x2 = cx2 + int((r - tlen) * math.cos(ang))
+                    y2 = cy2 + int((r - tlen) * math.sin(ang))
+                    pygame.draw.line(surface, color, (x1, y1), (x2, y2), tw)
+                # Minute hand (1 rotation per 30s — visibly moving)
+                min_ang = (t / 30000) * 2 * math.pi - math.pi / 2
+                mx = cx2 + int(r * 0.60 * math.cos(min_ang))
+                my = cy2 + int(r * 0.60 * math.sin(min_ang))
+                pygame.draw.line(surface, color, (cx2, cy2), (mx, my), 2)
+                # Second hand (1 rotation per 2s — fast sweep)
+                sec_ang = (t / 2000) * 2 * math.pi - math.pi / 2
+                sx = cx2 + int((r - 3) * math.cos(sec_ang))
+                sy = cy2 + int((r - 3) * math.sin(sec_ang))
+                pygame.draw.line(surface, (200, 80, 80), (cx2, cy2), (sx, sy), 1)
+                pygame.draw.circle(surface, color, (cx2, cy2), 2)
+
+        def draw_infinity_icon(surface, cx, cy, size, color):
+            a = size * 0.54
+            n = 100
+            pts = []
+            for i in range(n + 1):
+                th = i * 2 * math.pi / n
+                d = 1 + math.sin(th) ** 2
+                pts.append((int(cx + a * math.cos(th) / d),
+                             int(cy + a * math.sin(th) * math.cos(th) / d)))
+            if len(pts) >= 2:
+                pygame.draw.lines(surface, color, False, pts, 3)
+            # Animated glowing tracer
+            th_dot = (t / 1500) * 2 * math.pi
+            d = 1 + math.sin(th_dot) ** 2
+            dx = int(cx + a * math.cos(th_dot) / d)
+            dy = int(cy + a * math.sin(th_dot) * math.cos(th_dot) / d)
+            glow = pygame.Surface((18, 18), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (*color, 90), (9, 9), 9)
+            surface.blit(glow, (dx - 9, dy - 9))
+            pygame.draw.circle(surface, (245, 245, 235), (dx, dy), 3)
+
+        def piece_alpha(slot_offset=0):
+            CYCLE = 2200
+            FADE  = 280
+            phase = (t + slot_offset * CYCLE // 2) % CYCLE
+            if phase < FADE:
+                return int(255 * phase / FADE), (t + slot_offset * CYCLE // 2) // CYCLE % 6
+            elif phase > CYCLE - FADE:
+                return int(255 * (CYCLE - phase) / FADE), (t + slot_offset * CYCLE // 2) // CYCLE % 6
+            return 255, (t + slot_offset * CYCLE // 2) // CYCLE % 6
+
+        def blit_piece(img, cx, cy, size, alpha):
+            if img is None:
+                return
+            scaled = pygame.transform.smoothscale(img, (size, size))
+            scaled.set_alpha(alpha)
+            self.surface.blit(scaled, scaled.get_rect(center=(cx, cy)))
+
+        # ── MENU ──────────────────────────────────────────────────────────
+        if self.state == "MENU":
+            title_font = pygame.font.Font(None, 84)
+            sub_font   = pygame.font.Font(None, 28)
+
+            # white knight as logo
+            knight_img = self.menu_pieces['white'][2]  # index 2 = knight
+            if knight_img:
+                scaled = pygame.transform.smoothscale(knight_img, (88, 88))
+                # subtle float animation
+                offset_y = int(4 * math.sin(t / 900))
+                self.surface.blit(scaled, scaled.get_rect(center=(W // 2, 100 + offset_y)))
+
+            title_surf = title_font.render("@Chess", True, TEXT_PRI)
+            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, 180)))
+
+            sub_surf = sub_font.render("Select a game mode to begin", True, TEXT_MUT)
+            self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 212)))
+
+            pygame.draw.line(self.surface, (52, 50, 46),
+                             (W // 2 - 180, 230), (W // 2 + 180, 230), 1)
+
+            mode_icons = [
+                self.menu_pieces['white'][2],  # knight = Human vs AI
+                self.menu_pieces['black'][2],  # black knight = AI vs AI
+                self.menu_pieces['white'][5],  # pawn = H vs H
+            ]
+            icon_size = 26
+            for idx, (_mode, label, rect) in enumerate(self.menu_buttons):
+                hov = rect.collidepoint(mouse_pos)
+                draw_btn(rect, "    " + label, hov)
+                img = mode_icons[idx]
+                if img:
+                    sc = pygame.transform.smoothscale(img, (icon_size, icon_size))
+                    self.surface.blit(sc, sc.get_rect(midleft=(rect.left + 18, rect.centery)))
+
+        # ── MENU_COLOR ────────────────────────────────────────────────────
+        elif self.state == "MENU_COLOR":
+            title_font = pygame.font.Font(None, 58)
+            sub_font   = pygame.font.Font(None, 28)
+            label_font = pygame.font.Font(None, 36)
+
+            title_surf = title_font.render("Choose Your Side", True, TEXT_PRI)
+            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, 120)))
+
+            sub_surf = sub_font.render("Which side do you want to play?", True, TEXT_MUT)
+            self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 158)))
+
+            pygame.draw.line(self.surface, (52, 50, 46),
+                             (W // 2 - 200, 175), (W // 2 + 200, 175), 1)
+
+            # draw White and Black cards
+            for key, _label, rect in self.color_buttons[:2]:
+                is_white = (key == "WHITE")
+                hov = rect.collidepoint(mouse_pos)
+                # card background - checkerboard tint
+                card_bg   = (58, 56, 52) if is_white else (32, 30, 27)
+                card_bord = (ACCENT if hov else ((100, 97, 90) if is_white else (55, 52, 48)))
+                pygame.draw.rect(self.surface, card_bg,   rect, border_radius=12)
+                pygame.draw.rect(self.surface, card_bord, rect, 2, border_radius=12)
+                # small checkerboard pattern in background
+                sq = 18
+                for row in range(rect.height // sq + 1):
+                    for col in range(rect.width // sq + 1):
+                        if (row + col) % 2 == 0:
+                            shade = (68, 66, 62) if is_white else (38, 36, 33)
+                        else:
+                            shade = (52, 50, 46) if is_white else (28, 27, 24)
+                        tile = pygame.Rect(
+                            rect.x + col * sq, rect.y + row * sq, sq, sq)
+                        tile = tile.clip(rect)
+                        if tile.width > 0 and tile.height > 0:
+                            pygame.draw.rect(self.surface, shade, tile)
+                # re-draw border on top of tiles
+                pygame.draw.rect(self.surface, card_bord, rect, 2, border_radius=12)
+
+                # animated piece
+                alpha, idx = piece_alpha(slot_offset=(0 if is_white else 1))
+                pieces_list = self.menu_pieces['white' if is_white else 'black']
+                blit_piece(pieces_list[idx], rect.centerx, rect.centery - 20, 110, alpha)
+
+                # label at bottom of card
+                side_label = "White" if is_white else "Black"
+                lsurf = label_font.render(side_label, True, TEXT_PRI)
+                self.surface.blit(lsurf, lsurf.get_rect(center=(rect.centerx, rect.bottom - 28)))
+
+            # RANDOM and BACK buttons
+            for key, label, rect in self.color_buttons[2:]:
+                hov = rect.collidepoint(mouse_pos)
+                draw_btn(rect, label, hov, danger=(key == "BACK"))
+                if key == "BACK":
+                    draw_back_arrow(rect, RED_FG)
+
+        # ── MENU_TIME ─────────────────────────────────────────────────────
+        else:
+            title_font = pygame.font.Font(None, 52)
+            sub_font   = pygame.font.Font(None, 28)
+
+            title_surf = title_font.render("Time Control", True, TEXT_PRI)
+            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, 70)))
+
+            sub_surf = sub_font.render("Select the time control for this game", True, TEXT_MUT)
+            self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 103)))
+
+            pygame.draw.line(self.surface, (52, 50, 46),
+                             (W // 2 - 220, 120), (W // 2 + 220, 120), 1)
+
+            left_x = (W // 2) - 260
             for item in self.time_buttons:
                 if item[0] == "HEADER":
-                    category, y = item[1], item[2]
-                    header = section_font.render(category, True, (240, 240, 240))
-                    self.surface.blit(header, ((WINDOW_WIDTH // 2) - 255, y))
+                    category, hy = item[1], item[2]
+                    icon_size = 28
+                    icon_cx = left_x + icon_size // 2 + 2
+                    draw_category_icon(self.surface, category, icon_cx, hy + 16, icon_size, ACCENT)
+                    cat_surf = cat_font.render(category.upper(), True, ACCENT)
+                    self.surface.blit(cat_surf, (left_x + icon_size + 18, hy + 8))
+                    pygame.draw.line(self.surface, (52, 50, 46),
+                                     (left_x, hy + 30), (left_x + 518, hy + 30), 1)
                     continue
-
-                _type, label, rect, base_seconds, inc_seconds, _category = item
-                hovered = rect.collidepoint(mouse_pos)
-                selected = (
-                    self.base_time_seconds == base_seconds
-                    and self.increment_seconds == inc_seconds
-                )
+                if item[0] == "NOLIMIT":
+                    _type, label, rect, base_seconds, inc_seconds = item
+                    selected = (self.base_time_seconds == base_seconds
+                                and self.increment_seconds == inc_seconds)
+                    hov = rect.collidepoint(mouse_pos)
+                    # background
+                    if selected:
+                        bg, bord, fg = (44, 65, 22), ACCENT, (195, 230, 150)
+                    elif hov:
+                        bg, bord, fg = ACCENT, ACCENT, BG
+                    else:
+                        bg, bord, fg = BTN_DARK, BTN_BORD, TEXT_PRI
+                    pygame.draw.rect(self.surface, bg,   rect, border_radius=8)
+                    pygame.draw.rect(self.surface, bord, rect, 1, border_radius=8)
+                    # infinity icon centered-left
+                    inf_cx = rect.left + 50
+                    draw_infinity_icon(self.surface, inf_cx, rect.centery, 26,
+                                       (195, 230, 150) if selected else (ACCENT if not hov else BG))
+                    lsurf = btn_font.render("No Limit", True, fg)
+                    self.surface.blit(lsurf, lsurf.get_rect(midleft=(rect.left + 90, rect.centery)))
+                    continue
+                _type, label, rect, base_seconds, inc_seconds, _cat = item
+                selected = (self.base_time_seconds == base_seconds
+                            and self.increment_seconds == inc_seconds)
                 if selected:
-                    color = (101, 170, 82) if hovered else (86, 146, 70)
-                else:
-                    color = (79, 153, 247) if hovered else (58, 112, 184)
-                pygame.draw.rect(self.surface, color, rect, border_radius=8)
-                text = button_font.render(label, True, (255, 255, 255))
-                self.surface.blit(text, text.get_rect(center=rect.center))
+                    pulse = int(16 + 8 * math.sin(t / 380))
+                    glow = rect.inflate(pulse, pulse)
+                    gs = pygame.Surface((glow.width, glow.height), pygame.SRCALPHA)
+                    pygame.draw.rect(gs, (129, 182, 76, 42), gs.get_rect(), border_radius=12)
+                    self.surface.blit(gs, glow.topleft)
+                draw_btn(rect, label, rect.collidepoint(mouse_pos), selected=selected)
 
-            hovered_back = self.time_back_button.collidepoint(mouse_pos)
-            back_color = (130, 90, 90) if hovered_back else (108, 76, 76)
-            pygame.draw.rect(self.surface, back_color, self.time_back_button, border_radius=8)
-            back_text = button_font.render("Back", True, (255, 255, 255))
-            self.surface.blit(back_text, back_text.get_rect(center=self.time_back_button.center))
+            back_hov = self.time_back_button.collidepoint(mouse_pos)
+            draw_btn(self.time_back_button, "   Back", back_hov, danger=True)
+            draw_back_arrow(self.time_back_button, RED_FG)
 
         pygame.display.flip()
 
@@ -845,23 +1134,23 @@ class UnifiedChessApp:
             do_flip=False,
         )
 
-        button_font = pygame.font.Font(None, 29)
+        button_font = pygame.font.Font(None, 28)
         mouse_pos = pygame.mouse.get_pos()
+        labels = {"undo": "Undo  (U)", "redo": "Redo  (R)", "menu": "Menu  (M)"}
         for key, rect in self.game_buttons.items():
             hovered = rect.collidepoint(mouse_pos)
-            shadow_rect = rect.move(0, 2)
-            pygame.draw.rect(self.surface, (23, 27, 34), shadow_rect, border_radius=8)
-            base_color = (58, 68, 88) if hovered else (50, 58, 74)
-            border_color = (120, 148, 196) if hovered else (92, 108, 136)
-            pygame.draw.rect(self.surface, base_color, rect, border_radius=8)
-            pygame.draw.rect(self.surface, border_color, rect, 1, border_radius=8)
-            if key == "undo":
-                label = "Undo (U)"
-            elif key == "redo":
-                label = "Redo (R)"
+            is_menu = key == "menu"
+            if is_menu:
+                bg     = (58, 35, 35) if hovered else (42, 26, 26)
+                border = (105, 55, 55) if hovered else (75, 45, 45)
+                fg     = (220, 170, 170)
             else:
-                label = "Menu (M)"
-            text = button_font.render(label, True, (255, 255, 255))
+                bg     = (55, 82, 30) if hovered else (42, 62, 22)
+                border = (129, 182, 76) if hovered else (85, 122, 50)
+                fg     = (210, 240, 170) if hovered else (160, 200, 110)
+            pygame.draw.rect(self.surface, bg, rect, border_radius=7)
+            pygame.draw.rect(self.surface, border, rect, 1, border_radius=7)
+            text = button_font.render(labels[key], True, fg)
             self.surface.blit(text, text.get_rect(center=rect.center))
         pygame.display.flip()
 
@@ -879,9 +1168,12 @@ class UnifiedChessApp:
                     self.state = "MENU"
                     return
                 for item in self.time_buttons:
-                    if item[0] != "OPTION":
+                    if item[0] == "OPTION":
+                        _type, _label, rect, base_seconds, inc_seconds, _category = item
+                    elif item[0] == "NOLIMIT":
+                        _type, _label, rect, base_seconds, inc_seconds = item
+                    else:
                         continue
-                    _type, _label, rect, base_seconds, inc_seconds, _category = item
                     if not rect.collidepoint(event.pos):
                         continue
                     self.base_time_seconds = base_seconds
