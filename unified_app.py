@@ -51,6 +51,8 @@ class UnifiedChessApp:
         self.last_check_announce_ms = 0
         self._init_audio()
         self.menu_pieces = self._load_menu_pieces()
+        self.bg_particles = []
+        self._init_menu_background_particles()
 
         self.state = "MENU"
         self.game = None
@@ -299,9 +301,88 @@ class UnifiedChessApp:
                     result[color].append(None)
         return result
 
+    def _init_menu_background_particles(self):
+        """
+        Build a small set of slowly-drifting, semi-transparent chess pieces
+        that float across the menu background, evoking pieces in space.
+        Images are pre-rotated and alpha-baked once for a cheap per-frame blit.
+        """
+        self.bg_particles = []
+        rng = random.Random(20251997)
+        piece_indices = [0, 1, 2, 3, 4, 5]
+        count = 16
+        attempts = 0
+        while len(self.bg_particles) < count and attempts < count * 4:
+            attempts += 1
+            color = rng.choice(['white', 'black'])
+            idx = rng.choice(piece_indices)
+            img = self.menu_pieces[color][idx]
+            if img is None:
+                continue
+            size = rng.choice([56, 72, 96, 128, 160])
+            rotation = rng.uniform(-24.0, 24.0)
+            # Heavier pieces stay more transparent so they never fight the UI.
+            alpha = rng.randint(26, 62) if size >= 96 else rng.randint(34, 78)
+            try:
+                scaled = pygame.transform.smoothscale(img, (size, size))
+                rotated = pygame.transform.rotate(scaled, rotation)
+            except Exception:
+                continue
+            rotated.set_alpha(alpha)
+            self.bg_particles.append({
+                'img': rotated,
+                'cx_frac': rng.uniform(-0.05, 1.05),
+                'cy_frac': rng.uniform(-0.05, 1.05),
+                'amp_x': rng.uniform(30.0, 95.0),
+                'amp_y': rng.uniform(22.0, 70.0),
+                'speed_x': rng.uniform(0.00007, 0.00022) * rng.choice([-1, 1]),
+                'speed_y': rng.uniform(0.00006, 0.00018) * rng.choice([-1, 1]),
+                'phase_x': rng.uniform(0.0, math.tau),
+                'phase_y': rng.uniform(0.0, math.tau),
+                'drift_x': rng.uniform(-0.000035, 0.000035),
+                'drift_y': rng.uniform(-0.000028, 0.000028),
+            })
+
+    def _draw_menu_background(self, t):
+        """
+        Paint the elegant deep-space menu backdrop: dark base, a soft radial
+        glow, and slowly drifting chess pieces rendered behind the UI.
+        """
+        W, H = WINDOW_WIDTH, WINDOW_HEIGHT
+        self.surface.fill((22, 21, 18))
+
+        # Soft vignette glow behind the title area for cinematic depth.
+        glow_radius = max(220, min(W, H) // 2)
+        glow = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+        for r in range(glow_radius, 0, -18):
+            intensity = max(0, 36 - int(36 * (r / glow_radius)))
+            if intensity <= 0:
+                continue
+            pygame.draw.circle(
+                glow,
+                (129, 182, 76, intensity),
+                (glow_radius, glow_radius),
+                r,
+            )
+        self.surface.blit(
+            glow,
+            glow.get_rect(center=(W // 2, int(H * 0.28))),
+        )
+
+        # Drifting pieces.
+        for p in self.bg_particles:
+            fx = (p['cx_frac'] + p['drift_x'] * t) % 1.2 - 0.1
+            fy = (p['cy_frac'] + p['drift_y'] * t) % 1.2 - 0.1
+            px = fx * W + p['amp_x'] * math.sin(t * p['speed_x'] + p['phase_x'])
+            py = fy * H + p['amp_y'] * math.cos(t * p['speed_y'] + p['phase_y'])
+            rect = p['img'].get_rect(center=(int(px), int(py)))
+            self.surface.blit(p['img'], rect)
+
+        # Top accent bar on top of the background.
+        pygame.draw.rect(self.surface, (129, 182, 76), pygame.Rect(0, 0, W, 3))
+
     def _build_menu_buttons(self):
         center_x = WINDOW_WIDTH // 2
-        top = 250
         button_w = 320
         button_h = 56
         gap = 18
@@ -310,6 +391,9 @@ class UnifiedChessApp:
             ("AI_AI", "AI vs AI"),
             ("HUMAN_HUMAN", "Human vs Human"),
         ]
+        # Anchor the button stack below the title/divider block and leave
+        # comfortable breathing room at the bottom of the menu.
+        top = max(300, int(WINDOW_HEIGHT * 0.46))
         self.menu_buttons = []
         for idx, (mode_key, label) in enumerate(entries):
             rect = pygame.Rect(
@@ -329,7 +413,9 @@ class UnifiedChessApp:
             ("WHITE", "White",  pygame.Rect(cx - gap//2 - card_w, card_top, card_w, card_h)),
             ("BLACK", "Black",  pygame.Rect(cx + gap//2,           card_top, card_w, card_h)),
             ("RANDOM", "Random Color", pygame.Rect(cx - 140, card_top + card_h + 22, 280, 50)),
-            ("BACK",   "Back",         pygame.Rect(cx - 90,  card_top + card_h + 88, 180, 46)),
+            # Back sits in the top-left corner as a compact LED pill so it
+            # doesn't collide with the shared footer at the bottom.
+            ("BACK",   "Back",         pygame.Rect(24, 22, 128, 42)),
         ]
 
     def _build_time_buttons(self):
@@ -360,14 +446,9 @@ class UnifiedChessApp:
         nolimit_rect = pygame.Rect(left, y, nolimit_w, button_h)
         self.time_buttons.append(("NOLIMIT", "No Limit", nolimit_rect, -1, 0))
 
-        back_w = 180
-        back_h = 48
-        self.time_back_button = pygame.Rect(
-            (WINDOW_WIDTH // 2) - (back_w // 2),
-            WINDOW_HEIGHT - 72,
-            back_w,
-            back_h,
-        )
+        # Compact LED-style Back button anchored in the top-left so the
+        # footer at the bottom stays clean on every menu screen.
+        self.time_back_button = pygame.Rect(24, 22, 128, 42)
 
     def _format_time_control(self, base_seconds, increment_seconds):
         if base_seconds < 0:
@@ -380,14 +461,26 @@ class UnifiedChessApp:
     def _build_game_buttons(self):
         if not self.ui:
             return
-        panel_x = self.ui.sidebar_x + 16
-        button_w = max(120, self.surface.get_width() - panel_x - 28)
-        button_h = 38
-        top = self.surface.get_height() - self.ui.margin - 166
+        panel_x   = self.ui.sidebar_x + 12
+        panel_w   = self.surface.get_width() - panel_x - self.ui.margin - 8
+        arrow_sz  = 42
+        gap       = 8
+        row_h     = 42
+        bottom_y  = self.surface.get_height() - self.ui.margin - 12
+        row_y     = bottom_y - row_h
+
+        undo_rect = pygame.Rect(panel_x, row_y, arrow_sz, arrow_sz)
+        redo_rect = pygame.Rect(
+            panel_x + arrow_sz + gap, row_y, arrow_sz, arrow_sz
+        )
+        menu_x = panel_x + (arrow_sz + gap) * 2 + gap
+        menu_w = max(80, panel_x + panel_w - menu_x)
+        menu_rect = pygame.Rect(menu_x, row_y, menu_w, arrow_sz)
+
         self.game_buttons = {
-            "undo": pygame.Rect(panel_x, top, button_w, button_h),
-            "redo": pygame.Rect(panel_x, top + 46, button_w, button_h),
-            "menu": pygame.Rect(panel_x, top + 92, button_w, button_h),
+            "undo": undo_rect,
+            "redo": redo_rect,
+            "menu": menu_rect,
         }
 
     def start_game(self, mode, human_color=None):
@@ -442,6 +535,8 @@ class UnifiedChessApp:
                 self.human_color = random.choice([chess.WHITE, chess.BLACK])
             else:
                 self.human_color = human_color
+            # Flip the board so the human's pieces are always at the bottom.
+            self.ui.playerColor = self.human_color
             chosen = "White" if self.human_color == chess.WHITE else "Black"
             self.mode_label = (
                 f"{MODE_LABELS['HUMAN_AI']} (You: {chosen}) | "
@@ -487,6 +582,10 @@ class UnifiedChessApp:
 
     def _human_can_move_now(self):
         if self.state != "GAME" or self.game_over or self.mode == "AI_AI":
+            return False
+        # HUMAN_AI peek-mode: player is looking at an earlier position and
+        # must Redo back to the latest before they can play again.
+        if self._is_in_peek_mode():
             return False
         current_turn = self.game.board.board.turn
         if self.mode == "HUMAN_HUMAN":
@@ -556,8 +655,10 @@ class UnifiedChessApp:
                 self._speak_check_async()
             else:
                 self._play_sound("move")
-            self._clear_arrows_for_color(mover)
-            self._clear_markers_for_color(mover)
+            # Every move wipes the shared annotations so both players start
+            # the next turn with a clean board.
+            self.arrows = []
+            self.marked_squares = []
             if self.increment_seconds > 0:
                 if mover == chess.WHITE:
                     self.white_time += self.increment_seconds
@@ -585,12 +686,48 @@ class UnifiedChessApp:
             return True
         return False
 
-    def _undo_move(self):
-        if self.state != "GAME" or not self.game:
+    def _go_to_review_position(self, target_ply):
+        """
+        Step the displayed position forward/backward without touching
+        game_over state or move_log — used for reviewing the game after
+        it has already finished.
+        """
+        if not self.game or self.ui is None:
             return
         board = self.game.board.board
+        target_ply = max(0, min(target_ply, len(self.move_log)))
+
+        # Rewind.
+        while len(board.move_stack) > target_ply:
+            self.redo_stack.append(board.pop())
+        # Fast-forward.
+        while len(board.move_stack) < target_ply and self.redo_stack:
+            nxt = self.redo_stack.pop()
+            if nxt not in board.legal_moves:
+                self.redo_stack.clear()
+                break
+            board.push(nxt)
+
+        self.game.board.cached_legal_moves = None
+        self.game.current_turn = board.turn
+        self.ui.last_move = (
+            board.move_stack[-1].uci() if board.move_stack else None
+        )
+        self.ui.selected_square = None
+        self.ui.valid_moves = []
+        self.arrows = []
+        self.marked_squares = []
+        self.position_token += 1
+        with self.ai_state_lock:
+            self.ai_pending_move = None
+
+    def _undo_single_ply(self):
+        """Pop one move off the live board — returns True if it popped."""
+        if not self.game:
+            return False
+        board = self.game.board.board
         if not board.move_stack:
-            return
+            return False
         last_move = board.pop()
         self.redo_stack.append(last_move)
         mover = board.turn
@@ -603,30 +740,20 @@ class UnifiedChessApp:
         if self.game.moves_history:
             self.game.moves_history.pop()
         self.game.current_turn = board.turn
-        self.ui.last_move = board.move_stack[-1].uci() if board.move_stack else None
-        self.ui.selected_square = None
-        self.ui.valid_moves = []
-        self.ui.clear_game_result()
-        self.game_over = False
-        self.time_loss_text = ""
-        self.last_timer_tick = time.time()
         if self.move_log:
             self.move_log.pop()
-        self.turn_started_at = time.time()
-        self.position_token += 1
-        with self.ai_state_lock:
-            self.ai_pending_move = None
+        return True
 
-    def _redo_move(self):
-        if self.state != "GAME" or not self.game:
-            return
-        if not self.redo_stack:
-            return
+    def _redo_single_ply(self):
+        """Re-apply the most recently undone move. Returns True on success."""
+        if not self.game or not self.redo_stack:
+            return False
         board = self.game.board.board
-        move = self.redo_stack.pop()
+        move = self.redo_stack[-1]
         if move not in board.legal_moves:
             self.redo_stack.clear()
-            return
+            return False
+        self.redo_stack.pop()
         mover = board.turn
         san = move.uci()
         try:
@@ -642,13 +769,6 @@ class UnifiedChessApp:
         self.game.board.cached_legal_moves = None
         self.game.moves_history.append(move.uci())
         self.game.current_turn = board.turn
-        self.ui.last_move = move.uci()
-        self.ui.selected_square = None
-        self.ui.valid_moves = []
-        self.ui.clear_game_result()
-        self.game_over = False
-        self.time_loss_text = ""
-        self.last_timer_tick = time.time()
         self.move_log.append(
             {
                 "side": mover,
@@ -657,6 +777,109 @@ class UnifiedChessApp:
                 "think_seconds": 0.0,
             }
         )
+        return True
+
+    def _is_in_peek_mode(self):
+        """
+        Live HUMAN_AI 'peek' mode: the player rewound the position with
+        Undo but hasn't returned to the latest position yet. We keep
+        move_log intact, so this is simply whether the live board is
+        behind the recorded history.
+        """
+        if not self.game:
+            return False
+        return (
+            self.mode == "HUMAN_AI"
+            and not self.game_over
+            and len(self.game.board.board.move_stack) < len(self.move_log)
+        )
+
+    def _undo_move(self):
+        if self.state != "GAME" or not self.game:
+            return
+        board = self.game.board.board
+        if not board.move_stack:
+            return
+
+        # Game-over review: navigate through history without touching state.
+        if self.game_over:
+            self._go_to_review_position(len(board.move_stack) - 1)
+            return
+
+        # HUMAN_AI: peek-only navigation. The move_log is preserved so
+        # the player cannot drop a move, pick a different piece, and
+        # cheat the engine. They can only Redo back to the latest
+        # position to keep playing.
+        if self.mode == "HUMAN_AI" and self.human_color is not None:
+            current_ply = len(board.move_stack)
+            target = current_ply - 1
+            # Land on the human's turn when possible so peeking at the
+            # position "right before you played" is one click away.
+            if target > 0:
+                target_turn = chess.WHITE if target % 2 == 0 else chess.BLACK
+                if target_turn != self.human_color:
+                    target = max(0, target - 1)
+            self._go_to_review_position(target)
+            return
+
+        # HUMAN_HUMAN / AI_AI: traditional undo that rewrites move_log.
+        if not self._undo_single_ply():
+            return
+        self.ui.last_move = (
+            board.move_stack[-1].uci() if board.move_stack else None
+        )
+        self.ui.selected_square = None
+        self.ui.valid_moves = []
+        self.arrows = []
+        self.marked_squares = []
+        self.ui.clear_game_result()
+        self.game_over = False
+        self.time_loss_text = ""
+        self.last_timer_tick = time.time()
+        self.turn_started_at = time.time()
+        self.position_token += 1
+        with self.ai_state_lock:
+            self.ai_pending_move = None
+
+    def _redo_move(self):
+        if self.state != "GAME" or not self.game:
+            return
+        board = self.game.board.board
+
+        # Review mode: navigate forward through the already-recorded game.
+        if self.game_over:
+            self._go_to_review_position(len(board.move_stack) + 1)
+            return
+
+        # HUMAN_AI peek-forward: step forward in the recorded game.
+        if self.mode == "HUMAN_AI" and self.human_color is not None:
+            current_ply = len(board.move_stack)
+            max_ply = len(self.move_log)
+            if current_ply >= max_ply:
+                return
+            target = current_ply + 1
+            if target < max_ply:
+                target_turn = chess.WHITE if target % 2 == 0 else chess.BLACK
+                if target_turn != self.human_color:
+                    target = min(max_ply, target + 1)
+            self._go_to_review_position(target)
+            return
+
+        if not self.redo_stack:
+            return
+        if not self._redo_single_ply():
+            return
+        self.ui.last_move = (
+            board.move_stack[-1].uci() if board.move_stack else None
+        )
+        self.ui.selected_square = None
+        self.ui.valid_moves = []
+        self.arrows = []
+        self.marked_squares = []
+        self.ui.clear_game_result()
+        self.game_over = False
+        self.time_loss_text = ""
+        self.last_timer_tick = time.time()
         self.turn_started_at = time.time()
         self.position_token += 1
         with self.ai_state_lock:
@@ -713,6 +936,10 @@ class UnifiedChessApp:
 
     def _maybe_make_ai_move(self):
         if self.state != "GAME" or self.game_over:
+            return
+        # Freeze the AI while the player is peeking at a past position —
+        # it only resumes once Redo brings them back to the latest ply.
+        if self._is_in_peek_mode():
             return
         now_ms = pygame.time.get_ticks()
         if now_ms - self.last_ai_move_ms < self.ai_move_interval_ms:
@@ -793,9 +1020,7 @@ class UnifiedChessApp:
         RED_FG    = (210, 170, 170)
 
         t = pygame.time.get_ticks()
-        self.surface.fill(BG)
-        # top accent bar
-        pygame.draw.rect(self.surface, ACCENT, pygame.Rect(0, 0, W, 3))
+        self._draw_menu_background(t)
 
         btn_font  = pygame.font.Font(None, 34)
         cat_font  = pygame.font.Font(None, 24)
@@ -820,6 +1045,225 @@ class UnifiedChessApp:
             pygame.draw.rect(self.surface, bord, rect, 1, border_radius=8)
             surf = f.render(label, True, fg)
             self.surface.blit(surf, surf.get_rect(center=rect.center))
+
+        def draw_primary_btn(
+            rect,
+            label,
+            hovered,
+            selected=False,
+            danger=False,
+            font=None,
+            label_offset=(0, 0),
+            accent_bar=True,
+        ):
+            """
+            Premium button style used across all menu screens: drop shadow,
+            subtle vertical gradient, inset top highlight, left accent bar,
+            and an outer glow for hover / selected / danger states.
+            """
+            radius = 12
+            f = font or btn_font
+
+            # Soft drop shadow behind the button (kept subtle so the
+            # floating background pieces still read through the button).
+            shadow = pygame.Surface(
+                (rect.width + 16, rect.height + 16), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow,
+                (0, 0, 0, 70),
+                shadow.get_rect().inflate(-6, -6),
+                border_radius=radius + 2,
+            )
+            self.surface.blit(shadow, (rect.x - 8, rect.y - 2))
+
+            if danger:
+                if hovered:
+                    top_color    = (96, 44, 44)
+                    bot_color    = (58, 24, 24)
+                    border_color = (190, 110, 110)
+                    bar_color    = (210, 130, 130)
+                    fg           = (240, 200, 200)
+                else:
+                    top_color    = (72, 36, 36)
+                    bot_color    = RED_BG
+                    border_color = RED_BORD
+                    bar_color    = (165, 90, 90)
+                    fg           = RED_FG
+                glow_color = (180, 80, 80)
+            elif selected:
+                top_color    = (88, 122, 50)
+                bot_color    = (44, 65, 22)
+                border_color = ACCENT
+                bar_color    = (220, 240, 170)
+                fg           = (220, 240, 170)
+                glow_color   = ACCENT
+            elif hovered:
+                top_color    = (74, 104, 44)
+                bot_color    = (44, 62, 22)
+                border_color = ACCENT
+                bar_color    = ACCENT
+                fg           = (224, 244, 184)
+                glow_color   = ACCENT
+            else:
+                top_color    = (54, 52, 46)
+                bot_color    = (34, 32, 28)
+                border_color = (78, 74, 68)
+                bar_color    = (98, 138, 58)
+                fg           = TEXT_PRI
+                glow_color   = None
+
+            # Outer glow: hover (static) + selected (pulse).
+            if glow_color is not None and (hovered or selected or danger):
+                if selected:
+                    pulse_a = 46 + int(20 * math.sin(t / 380))
+                else:
+                    pulse_a = 42 if hovered else 30
+                glow = pygame.Surface(
+                    (rect.width + 28, rect.height + 28), pygame.SRCALPHA
+                )
+                pygame.draw.rect(
+                    glow,
+                    (*glow_color, max(10, pulse_a)),
+                    glow.get_rect(),
+                    border_radius=radius + 8,
+                )
+                self.surface.blit(glow, (rect.x - 14, rect.y - 14))
+
+            # Build a rounded vertical gradient into its own surface.
+            # Semi-transparent fill so the drifting pieces remain visible
+            # through the button while keeping the label clearly legible.
+            fill_alpha = 215 if (hovered or selected or danger) else 180
+            grad = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            for y in range(rect.height):
+                k = y / max(1, rect.height - 1)
+                r = int(top_color[0] + (bot_color[0] - top_color[0]) * k)
+                g = int(top_color[1] + (bot_color[1] - top_color[1]) * k)
+                b = int(top_color[2] + (bot_color[2] - top_color[2]) * k)
+                pygame.draw.line(grad, (r, g, b, fill_alpha), (0, y), (rect.width, y))
+            mask = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(
+                mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius
+            )
+            grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            self.surface.blit(grad, rect.topleft)
+
+            # Inset top highlight for a subtle "lit from above" feel.
+            highlight = pygame.Surface(
+                (max(1, rect.width - 14), 2), pygame.SRCALPHA
+            )
+            highlight.fill((255, 255, 255, 40 if (hovered or selected) else 28))
+            self.surface.blit(highlight, (rect.x + 7, rect.y + 3))
+
+            # Crisp 1px border.
+            pygame.draw.rect(
+                self.surface, border_color, rect, 1, border_radius=radius
+            )
+
+            # Left accent bar (vertical strip, chess-inspired signal stripe).
+            if accent_bar:
+                bar_w = 4 if (hovered or selected) else 3
+                bar_h = max(14, rect.height - 18)
+                bar_rect = pygame.Rect(
+                    rect.x + 10, rect.centery - bar_h // 2, bar_w, bar_h
+                )
+                pygame.draw.rect(
+                    self.surface, bar_color, bar_rect, border_radius=2
+                )
+
+            # Label (centered by default; optional offset for icons).
+            surf = f.render(label, True, fg)
+            lrect = surf.get_rect(center=rect.center)
+            lrect.x += label_offset[0]
+            lrect.y += label_offset[1]
+            self.surface.blit(surf, lrect)
+
+        def draw_led_back_btn(rect, hovered):
+            """
+            Compact corner "Back" pill with a pulsing red LED dot — acts as
+            a clean alternative to a bottom-centred Back button so the
+            shared footer can breathe.
+            """
+            radius = rect.height // 2
+
+            # Soft shadow beneath the pill (kept light so the background
+            # drift shows through the button).
+            shadow = pygame.Surface(
+                (rect.width + 12, rect.height + 12), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow,
+                (0, 0, 0, 70),
+                shadow.get_rect().inflate(-4, -4),
+                border_radius=radius + 2,
+            )
+            self.surface.blit(shadow, (rect.x - 6, rect.y - 2))
+
+            if hovered:
+                bg_color  = (84, 38, 38)
+                bord      = (214, 128, 128)
+                fg        = (246, 222, 222)
+                led_core  = (255, 130, 130)
+                led_glow  = (255, 80, 80)
+                bg_alpha  = 215
+            else:
+                bg_color  = (44, 26, 26)
+                bord      = (142, 78, 78)
+                fg        = (222, 174, 174)
+                led_core  = (230, 90, 90)
+                led_glow  = (220, 60, 60)
+                bg_alpha  = 180
+
+            # Semi-transparent pill body so the floating pieces pass behind.
+            pill_body = pygame.Surface(
+                (rect.width, rect.height), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                pill_body,
+                (*bg_color, bg_alpha),
+                pill_body.get_rect(),
+                border_radius=radius,
+            )
+            self.surface.blit(pill_body, rect.topleft)
+            pygame.draw.rect(self.surface, bord, rect, 1, border_radius=radius)
+
+            # Pulsing red LED dot on the left side of the pill.
+            pulse = 0.5 + 0.5 * math.sin(t / 260)
+            led_cx = rect.x + 18
+            led_cy = rect.centery
+            glow_alpha = int(80 + 120 * pulse)
+            glow_surf = pygame.Surface((24, 24), pygame.SRCALPHA)
+            pygame.draw.circle(glow_surf, (*led_glow, glow_alpha), (12, 12), 12)
+            pygame.draw.circle(glow_surf, (*led_glow, min(255, glow_alpha + 50)), (12, 12), 7)
+            self.surface.blit(glow_surf, (led_cx - 12, led_cy - 12))
+            pygame.draw.circle(self.surface, led_core, (led_cx, led_cy), 4)
+            pygame.draw.circle(self.surface, (255, 220, 220), (led_cx, led_cy), 2)
+
+            # Back arrow.
+            ax = rect.x + 42
+            pygame.draw.line(self.surface, fg, (ax, led_cy), (ax - 9, led_cy), 2)
+            pygame.draw.line(self.surface, fg, (ax - 9, led_cy), (ax - 4, led_cy - 5), 2)
+            pygame.draw.line(self.surface, fg, (ax - 9, led_cy), (ax - 4, led_cy + 5), 2)
+
+            # "Back" label.
+            bfont = pygame.font.Font(None, 26)
+            bsurf = bfont.render("Back", True, fg)
+            self.surface.blit(
+                bsurf, bsurf.get_rect(midleft=(rect.x + 52, led_cy))
+            )
+
+        def draw_elegant_divider(div_y, half_width=200):
+            pygame.draw.line(self.surface, (52, 50, 46),
+                             (W // 2 - half_width, div_y), (W // 2 - 10, div_y), 1)
+            pygame.draw.line(self.surface, (52, 50, 46),
+                             (W // 2 + 10, div_y), (W // 2 + half_width, div_y), 1)
+            diamond = [
+                (W // 2,     div_y - 5),
+                (W // 2 + 5, div_y),
+                (W // 2,     div_y + 5),
+                (W // 2 - 5, div_y),
+            ]
+            pygame.draw.polygon(self.surface, ACCENT, diamond)
 
         def draw_back_arrow(rect, color):
             bx = rect.left + 20
@@ -960,39 +1404,42 @@ class UnifiedChessApp:
 
         # ── MENU ──────────────────────────────────────────────────────────
         if self.state == "MENU":
-            title_font = pygame.font.Font(None, 84)
-            sub_font   = pygame.font.Font(None, 28)
+            title_font  = pygame.font.Font(None, 96)
+            sub_font    = pygame.font.Font(None, 26)
+            footer_font = pygame.font.Font(None, 20)
 
-            # white knight as logo
-            knight_img = self.menu_pieces['white'][2]  # index 2 = knight
-            if knight_img:
-                scaled = pygame.transform.smoothscale(knight_img, (88, 88))
-                # subtle float animation
-                offset_y = int(4 * math.sin(t / 900))
-                self.surface.blit(scaled, scaled.get_rect(center=(W // 2, 100 + offset_y)))
+            # Layout anchors scale with the window so it looks balanced in
+            # both windowed and fullscreen modes.
+            logo_y   = int(H * 0.16)
+            title_y  = int(H * 0.315)
+            sub_y    = int(H * 0.385)
+            div_y    = int(H * 0.425)
+            footer_y = H - 28
+
+            # Single centred white-knight emblem above the title.
+            white_knight = self.menu_pieces['white'][2]
+            logo_size = 100
+            float_offset = 4 * math.sin(t / 900)
+            if white_knight:
+                sc_w = pygame.transform.smoothscale(
+                    white_knight, (logo_size, logo_size)
+                )
+                self.surface.blit(
+                    sc_w,
+                    sc_w.get_rect(center=(W // 2, logo_y + int(float_offset))),
+                )
 
             title_surf = title_font.render("@Chess", True, TEXT_PRI)
-            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, 180)))
+            self.surface.blit(title_surf, title_surf.get_rect(center=(W // 2, title_y)))
 
             sub_surf = sub_font.render("Select a game mode to begin", True, TEXT_MUT)
-            self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 212)))
+            self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, sub_y)))
 
-            pygame.draw.line(self.surface, (52, 50, 46),
-                             (W // 2 - 180, 230), (W // 2 + 180, 230), 1)
+            draw_elegant_divider(div_y, half_width=200)
 
-            mode_icons = [
-                self.menu_pieces['white'][2],  # knight = Human vs AI
-                self.menu_pieces['black'][2],  # black knight = AI vs AI
-                self.menu_pieces['white'][5],  # pawn = H vs H
-            ]
-            icon_size = 26
-            for idx, (_mode, label, rect) in enumerate(self.menu_buttons):
+            for _mode, label, rect in self.menu_buttons:
                 hov = rect.collidepoint(mouse_pos)
-                draw_btn(rect, "    " + label, hov)
-                img = mode_icons[idx]
-                if img:
-                    sc = pygame.transform.smoothscale(img, (icon_size, icon_size))
-                    self.surface.blit(sc, sc.get_rect(midleft=(rect.left + 18, rect.centery)))
+                draw_primary_btn(rect, label, hov)
 
         # ── MENU_COLOR ────────────────────────────────────────────────────
         elif self.state == "MENU_COLOR":
@@ -1006,50 +1453,70 @@ class UnifiedChessApp:
             sub_surf = sub_font.render("Which side do you want to play?", True, TEXT_MUT)
             self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 158)))
 
-            pygame.draw.line(self.surface, (52, 50, 46),
-                             (W // 2 - 200, 175), (W // 2 + 200, 175), 1)
+            draw_elegant_divider(180, half_width=220)
 
-            # draw White and Black cards
+            # Draw White and Black cards — transparent so the drifting
+            # pieces from the background pass right through them.
             for key, _label, rect in self.color_buttons[:2]:
                 is_white = (key == "WHITE")
                 hov = rect.collidepoint(mouse_pos)
-                # card background - checkerboard tint
-                card_bg   = (58, 56, 52) if is_white else (32, 30, 27)
-                card_bord = (ACCENT if hov else ((100, 97, 90) if is_white else (55, 52, 48)))
-                pygame.draw.rect(self.surface, card_bg,   rect, border_radius=12)
-                pygame.draw.rect(self.surface, card_bord, rect, 2, border_radius=12)
-                # small checkerboard pattern in background
-                sq = 18
-                for row in range(rect.height // sq + 1):
-                    for col in range(rect.width // sq + 1):
-                        if (row + col) % 2 == 0:
-                            shade = (68, 66, 62) if is_white else (38, 36, 33)
-                        else:
-                            shade = (52, 50, 46) if is_white else (28, 27, 24)
-                        tile = pygame.Rect(
-                            rect.x + col * sq, rect.y + row * sq, sq, sq)
-                        tile = tile.clip(rect)
-                        if tile.width > 0 and tile.height > 0:
-                            pygame.draw.rect(self.surface, shade, tile)
-                # re-draw border on top of tiles
-                pygame.draw.rect(self.surface, card_bord, rect, 2, border_radius=12)
 
-                # animated piece
+                # Contrast tint: dark panel sits behind the white piece and
+                # a light panel sits behind the black piece, so each piece
+                # pops against its backdrop. Very low alpha so the drifting
+                # pieces in the background remain clearly visible through
+                # the card.
+                tint_color = (12, 10, 8) if is_white else (235, 232, 225)
+                tint_alpha = 38 if is_white else 14
+                tint = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(
+                    tint,
+                    (*tint_color, tint_alpha),
+                    tint.get_rect(),
+                    border_radius=14,
+                )
+                self.surface.blit(tint, rect.topleft)
+
+                # Soft outer glow on hover.
+                if hov:
+                    glow = pygame.Surface(
+                        (rect.width + 24, rect.height + 24), pygame.SRCALPHA
+                    )
+                    pygame.draw.rect(
+                        glow,
+                        (*ACCENT, 55),
+                        glow.get_rect(),
+                        border_radius=18,
+                    )
+                    self.surface.blit(glow, (rect.x - 12, rect.y - 12))
+
+                card_bord = ACCENT if hov else (
+                    (120, 116, 106) if is_white else (70, 66, 60)
+                )
+                pygame.draw.rect(
+                    self.surface, card_bord, rect, 2, border_radius=14
+                )
+
                 alpha, idx = piece_alpha(slot_offset=(0 if is_white else 1))
                 pieces_list = self.menu_pieces['white' if is_white else 'black']
-                blit_piece(pieces_list[idx], rect.centerx, rect.centery - 20, 110, alpha)
+                blit_piece(
+                    pieces_list[idx], rect.centerx, rect.centery - 20, 110, alpha
+                )
 
-                # label at bottom of card
                 side_label = "White" if is_white else "Black"
                 lsurf = label_font.render(side_label, True, TEXT_PRI)
-                self.surface.blit(lsurf, lsurf.get_rect(center=(rect.centerx, rect.bottom - 28)))
+                self.surface.blit(
+                    lsurf,
+                    lsurf.get_rect(center=(rect.centerx, rect.bottom - 28)),
+                )
 
-            # RANDOM and BACK buttons
+            # Random button: premium style (centered under the cards).
             for key, label, rect in self.color_buttons[2:]:
                 hov = rect.collidepoint(mouse_pos)
-                draw_btn(rect, label, hov, danger=(key == "BACK"))
                 if key == "BACK":
-                    draw_back_arrow(rect, RED_FG)
+                    draw_led_back_btn(rect, hov)
+                else:
+                    draw_primary_btn(rect, label, hov)
 
         # ── MENU_TIME ─────────────────────────────────────────────────────
         else:
@@ -1062,8 +1529,7 @@ class UnifiedChessApp:
             sub_surf = sub_font.render("Select the time control for this game", True, TEXT_MUT)
             self.surface.blit(sub_surf, sub_surf.get_rect(center=(W // 2, 103)))
 
-            pygame.draw.line(self.surface, (52, 50, 46),
-                             (W // 2 - 220, 120), (W // 2 + 220, 120), 1)
+            draw_elegant_divider(122, half_width=240)
 
             left_x = (W // 2) - 260
             for item in self.time_buttons:
@@ -1082,36 +1548,51 @@ class UnifiedChessApp:
                     selected = (self.base_time_seconds == base_seconds
                                 and self.increment_seconds == inc_seconds)
                     hov = rect.collidepoint(mouse_pos)
-                    # background
-                    if selected:
-                        bg, bord, fg = (44, 65, 22), ACCENT, (195, 230, 150)
-                    elif hov:
-                        bg, bord, fg = ACCENT, ACCENT, BG
-                    else:
-                        bg, bord, fg = BTN_DARK, BTN_BORD, TEXT_PRI
-                    pygame.draw.rect(self.surface, bg,   rect, border_radius=8)
-                    pygame.draw.rect(self.surface, bord, rect, 1, border_radius=8)
-                    # infinity icon centered-left
-                    inf_cx = rect.left + 50
-                    draw_infinity_icon(self.surface, inf_cx, rect.centery, 26,
-                                       (195, 230, 150) if selected else (ACCENT if not hov else BG))
-                    lsurf = btn_font.render("No Limit", True, fg)
-                    self.surface.blit(lsurf, lsurf.get_rect(midleft=(rect.left + 90, rect.centery)))
+                    # Premium button background, but turn off the left bar
+                    # so the infinity icon owns the left-side ornament.
+                    draw_primary_btn(
+                        rect,
+                        "No Limit",
+                        hov,
+                        selected=selected,
+                        accent_bar=False,
+                        label_offset=(28, 0),
+                    )
+                    inf_color = (220, 240, 170) if selected else (ACCENT if hov else (160, 200, 110))
+                    draw_infinity_icon(self.surface, rect.left + 40, rect.centery, 26, inf_color)
                     continue
                 _type, label, rect, base_seconds, inc_seconds, _cat = item
                 selected = (self.base_time_seconds == base_seconds
                             and self.increment_seconds == inc_seconds)
-                if selected:
-                    pulse = int(16 + 8 * math.sin(t / 380))
-                    glow = rect.inflate(pulse, pulse)
-                    gs = pygame.Surface((glow.width, glow.height), pygame.SRCALPHA)
-                    pygame.draw.rect(gs, (129, 182, 76, 42), gs.get_rect(), border_radius=12)
-                    self.surface.blit(gs, glow.topleft)
-                draw_btn(rect, label, rect.collidepoint(mouse_pos), selected=selected)
+                draw_primary_btn(
+                    rect,
+                    label,
+                    rect.collidepoint(mouse_pos),
+                    selected=selected,
+                )
 
             back_hov = self.time_back_button.collidepoint(mouse_pos)
-            draw_btn(self.time_back_button, "   Back", back_hov, danger=True)
-            draw_back_arrow(self.time_back_button, RED_FG)
+            draw_led_back_btn(self.time_back_button, back_hov)
+
+        # Shared footer across all menu screens: author credit + controls.
+        footer_font_small = pygame.font.Font(None, 20)
+        credit_font       = pygame.font.Font(None, 22)
+        footer_y = H - 28
+        credit_surf = credit_font.render(
+            "Created by Omar Sheikh", True, (150, 146, 136)
+        )
+        self.surface.blit(
+            credit_surf,
+            credit_surf.get_rect(center=(W // 2, footer_y - 22)),
+        )
+        controls_surf = footer_font_small.render(
+            "F11 Fullscreen  ·  Esc exits fullscreen",
+            True,
+            (92, 89, 82),
+        )
+        self.surface.blit(
+            controls_surf, controls_surf.get_rect(center=(W // 2, footer_y))
+        )
 
         pygame.display.flip()
 
@@ -1134,24 +1615,183 @@ class UnifiedChessApp:
             do_flip=False,
         )
 
-        button_font = pygame.font.Font(None, 28)
+        button_font = pygame.font.Font(None, 26)
         mouse_pos = pygame.mouse.get_pos()
-        labels = {"undo": "Undo  (U)", "redo": "Redo  (R)", "menu": "Menu  (M)"}
-        for key, rect in self.game_buttons.items():
-            hovered = rect.collidepoint(mouse_pos)
-            is_menu = key == "menu"
-            if is_menu:
-                bg     = (58, 35, 35) if hovered else (42, 26, 26)
-                border = (105, 55, 55) if hovered else (75, 45, 45)
-                fg     = (220, 170, 170)
+
+        def _gradient_body(rect, top_c, bot_c, radius):
+            grad = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            for yy in range(rect.height):
+                k = yy / max(1, rect.height - 1)
+                rc = int(top_c[0] + (bot_c[0] - top_c[0]) * k)
+                gc = int(top_c[1] + (bot_c[1] - top_c[1]) * k)
+                bc = int(top_c[2] + (bot_c[2] - top_c[2]) * k)
+                pygame.draw.line(grad, (rc, gc, bc, 255), (0, yy), (rect.width, yy))
+            mask = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(
+                mask,
+                (255, 255, 255, 255),
+                mask.get_rect(),
+                border_radius=radius,
+            )
+            grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            self.surface.blit(grad, rect.topleft)
+
+        def _render_arrow_button(rect, direction, hovered, enabled):
+            """Compact square icon button with a left/right chevron."""
+            radius = 10
+            # Soft drop shadow.
+            shadow = pygame.Surface(
+                (rect.width + 12, rect.height + 12), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow,
+                (0, 0, 0, 80),
+                shadow.get_rect().inflate(-4, -4),
+                border_radius=radius + 2,
+            )
+            self.surface.blit(shadow, (rect.x - 6, rect.y - 2))
+
+            if not enabled:
+                top_c, bot_c = (42, 40, 36), (28, 26, 24)
+                border_c = (60, 58, 54)
+                arrow_c  = (110, 107, 100)
+                glow_c   = None
+            elif hovered:
+                top_c, bot_c = (74, 104, 44), (44, 62, 22)
+                border_c = (129, 182, 76)
+                arrow_c  = (226, 244, 184)
+                glow_c   = (129, 182, 76)
             else:
-                bg     = (55, 82, 30) if hovered else (42, 62, 22)
-                border = (129, 182, 76) if hovered else (85, 122, 50)
-                fg     = (210, 240, 170) if hovered else (160, 200, 110)
-            pygame.draw.rect(self.surface, bg, rect, border_radius=7)
-            pygame.draw.rect(self.surface, border, rect, 1, border_radius=7)
-            text = button_font.render(labels[key], True, fg)
+                top_c, bot_c = (54, 72, 34), (36, 50, 20)
+                border_c = (100, 142, 58)
+                arrow_c  = (210, 240, 170)
+                glow_c   = None
+
+            if glow_c is not None:
+                glow = pygame.Surface(
+                    (rect.width + 18, rect.height + 18), pygame.SRCALPHA
+                )
+                pygame.draw.rect(
+                    glow,
+                    (*glow_c, 55),
+                    glow.get_rect(),
+                    border_radius=radius + 6,
+                )
+                self.surface.blit(glow, (rect.x - 9, rect.y - 9))
+
+            _gradient_body(rect, top_c, bot_c, radius)
+
+            # Inset top highlight.
+            highlight = pygame.Surface(
+                (max(1, rect.width - 12), 2), pygame.SRCALPHA
+            )
+            highlight.fill((255, 255, 255, 38 if hovered else 22))
+            self.surface.blit(highlight, (rect.x + 6, rect.y + 3))
+
+            pygame.draw.rect(
+                self.surface, border_c, rect, 1, border_radius=radius
+            )
+
+            # Chevron arrow.
+            cx, cy = rect.center
+            s = rect.height // 4
+            if direction == "left":
+                pts = [(cx + s // 2, cy - s), (cx - s // 2, cy), (cx + s // 2, cy + s)]
+            else:
+                pts = [(cx - s // 2, cy - s), (cx + s // 2, cy), (cx - s // 2, cy + s)]
+            pygame.draw.lines(self.surface, arrow_c, False, pts, 3)
+
+        def _render_menu_button(rect, hovered):
+            radius = 10
+            shadow = pygame.Surface(
+                (rect.width + 12, rect.height + 12), pygame.SRCALPHA
+            )
+            pygame.draw.rect(
+                shadow,
+                (0, 0, 0, 80),
+                shadow.get_rect().inflate(-4, -4),
+                border_radius=radius + 2,
+            )
+            self.surface.blit(shadow, (rect.x - 6, rect.y - 2))
+
+            if hovered:
+                top_c, bot_c = (96, 44, 44), (58, 24, 24)
+                border_c = (212, 128, 128)
+                fg_c     = (248, 218, 218)
+                glow_c   = (200, 90, 90)
+            else:
+                top_c, bot_c = (70, 34, 34), (46, 22, 22)
+                border_c = (138, 78, 78)
+                fg_c     = (226, 180, 180)
+                glow_c   = None
+
+            if glow_c is not None:
+                glow = pygame.Surface(
+                    (rect.width + 18, rect.height + 18), pygame.SRCALPHA
+                )
+                pygame.draw.rect(
+                    glow,
+                    (*glow_c, 55),
+                    glow.get_rect(),
+                    border_radius=radius + 6,
+                )
+                self.surface.blit(glow, (rect.x - 9, rect.y - 9))
+
+            _gradient_body(rect, top_c, bot_c, radius)
+
+            highlight = pygame.Surface(
+                (max(1, rect.width - 14), 2), pygame.SRCALPHA
+            )
+            highlight.fill((255, 255, 255, 40 if hovered else 24))
+            self.surface.blit(highlight, (rect.x + 7, rect.y + 3))
+
+            pygame.draw.rect(
+                self.surface, border_c, rect, 1, border_radius=radius
+            )
+
+            text = button_font.render("Menu  (M)", True, fg_c)
             self.surface.blit(text, text.get_rect(center=rect.center))
+
+        # Undo / redo availability:
+        #  - HUMAN_AI live play: peek mode — Undo moves you backwards in
+        #    the recorded history, Redo brings you back. No takebacks.
+        #  - Game-over: pure review navigation through the whole history.
+        #  - HUMAN_HUMAN / AI_AI: traditional undo/redo against redo_stack.
+        if self.game_over:
+            can_undo = bool(
+                self.game and self.game.board.board.move_stack
+            )
+            can_redo = bool(
+                self.game
+                and len(self.game.board.board.move_stack) < len(self.move_log)
+            )
+        elif self.mode == "HUMAN_AI":
+            can_undo = bool(
+                self.game and self.game.board.board.move_stack
+            )
+            can_redo = bool(
+                self.game
+                and len(self.game.board.board.move_stack) < len(self.move_log)
+            )
+        else:
+            can_undo = bool(
+                self.game and self.game.board.board.move_stack
+            )
+            can_redo = bool(self.redo_stack)
+        undo_rect = self.game_buttons["undo"]
+        redo_rect = self.game_buttons["redo"]
+        menu_rect = self.game_buttons["menu"]
+        _render_arrow_button(
+            undo_rect, "left",
+            undo_rect.collidepoint(mouse_pos) and can_undo,
+            enabled=can_undo,
+        )
+        _render_arrow_button(
+            redo_rect, "right",
+            redo_rect.collidepoint(mouse_pos) and can_redo,
+            enabled=can_redo,
+        )
+        _render_menu_button(menu_rect, menu_rect.collidepoint(mouse_pos))
         pygame.display.flip()
 
     def _handle_menu_event(self, event):
@@ -1217,6 +1857,16 @@ class UnifiedChessApp:
                     elif key == "menu":
                         self.go_to_menu()
                     return
+
+            # Review-mode: once the game is finished, clicking a move row
+            # in the history jumps the board to that position without
+            # resuming the game.
+            if self.game_over and self.ui is not None:
+                clicked_ply = self.ui.get_history_click_ply(event.pos)
+                if clicked_ply is not None:
+                    self._go_to_review_position(clicked_ply)
+                    return
+
             self.left_down_pos = event.pos
             self.left_drag_started = False
             if not self._human_can_move_now():
